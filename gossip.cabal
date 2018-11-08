@@ -1,0 +1,117 @@
+cabal-version: 2.2
+build-type:    Simple
+
+name:          gossip
+version:       0.1.0.0
+synopsis:      Gossip Protocols
+homepage:      https://github.com/oscoin/gossip
+bug-reports:   https://github.com/oscoin/gossip/issues
+license:       BSD-3-Clause
+license-file:  LICENSE
+author:        Kim Altintop <kim@monadic.xyz>
+maintainer:    Kim Altintop <kim@monadic.xyz>, Monadic Team <team@monadic.xyz>
+copyright:     2018 Monadic GmbH
+
+category:      Network
+
+extra-source-files:
+      CHANGELOG.md
+    , README.md
+
+source-repository head
+    type: git
+    location: https://github.com/oscoin/gossip
+
+common common
+    default-language: Haskell2010
+
+    build-depends:
+        async
+      , base
+      , bytestring
+      , containers
+      , splitmix
+      , stm
+      , transformers
+      , unordered-containers
+
+    default-extensions:
+        BangPatterns
+        DeriveFunctor
+        DeriveGeneric
+        LambdaCase
+        MultiParamTypeClasses
+        NamedFieldPuns
+        RecordWildCards
+        StrictData
+        TupleSections
+        TypeApplications
+        ViewPatterns
+
+    ghc-options:
+        -Wall
+        -Wcompat
+        -Wincomplete-uni-patterns
+        -Wincomplete-record-updates
+        -Wredundant-constraints
+        -fprint-expanded-synonyms
+        -funbox-small-strict-fields
+
+library
+    import: common
+    hs-source-dirs: src
+
+    exposed-modules:
+        Network.Gossip.HyParView
+        Network.Gossip.HyParView.Periodic
+        Network.Gossip.IO.Peer
+        Network.Gossip.IO.Run
+        Network.Gossip.IO.Socket
+        Network.Gossip.IO.Wire
+        Network.Gossip.Plumtree
+        Network.Gossip.Plumtree.Scheduler
+
+    other-modules:
+        Network.Gossip.HyParView.Internal
+        Network.Socket.Serialise
+        Paths_gossip
+
+    build-depends:
+        conduit > 1.3
+      , focus
+      , hashable
+      , list-t
+      , microlens
+      , microlens-mtl
+      , mtl
+      , network
+      , random
+      , safe-exceptions
+      , serialise
+      , stm-containers < 1
+      , text
+      , time
+
+
+test-suite tests
+    import: common
+
+    main-is: Main.hs
+    hs-source-dirs: test
+    type: exitcode-stdio-1.0
+
+    build-depends:
+        algebraic-graphs == 0.2.*
+      , gossip
+      , hedgehog
+
+    other-modules:
+        Network.Gossip.Test.Assert
+        Network.Gossip.Test.Broadcast
+        Network.Gossip.Test.Gen
+        Network.Gossip.Test.Membership
+
+    ghc-options:
+        -threaded
+        -rtsopts
+        -with-rtsopts=-N

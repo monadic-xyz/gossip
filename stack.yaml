@@ -1,0 +1,5 @@
+resolver: lts-12.17
+packages:
+- .
+extra-deps:
+- serialise-0.2.1.0
