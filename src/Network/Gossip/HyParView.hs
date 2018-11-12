@@ -586,7 +586,7 @@ addAllToPassive ns = do
         atomically $ do
             actv <- keysSet <$> readTVar envActive
             let ns' = Set.difference (Set.delete self ns) actv
-            modifyTVar' envPassive $ (`Set.difference` ns')
+            modifyTVar' envPassive (`Set.difference` ns')
             void $ foldlM (addToPassive' hdl) gen ns'
 
 removeFromActive
