@@ -24,7 +24,7 @@ steps:
   - id: "Format (haskell)"
     waitFor: ["Build deps"]
     name: "eu.gcr.io/opensourcecoin/haskell:8.4.4"
-    args: ["./scripts/check-haskell-format.sh"]
+    args: ["./.ci/check-haskell-format.sh"]
 
   - id: "Lint (hlint)"
     waitFor: ["Build deps"]
