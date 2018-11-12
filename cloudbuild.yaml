@@ -34,7 +34,6 @@ steps:
   - id: "Test & Build"
     waitFor: ["Build deps"]
     name: "eu.gcr.io/opensourcecoin/haskell:8.4.4"
-    entrypoint: "bash"
     env:
     - STACK_ROOT=/workspace/.stack
     args:
