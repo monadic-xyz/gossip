@@ -26,7 +26,7 @@ import           Control.Concurrent.Async (async, uninterruptibleCancel)
 import           Control.Exception.Safe (bracket, onException, tryAny)
 import           Data.Bifunctor (second)
 import           Data.ByteString (ByteString)
-import           Data.Foldable (for_, toList)
+import           Data.Foldable (toList)
 import           Data.Hashable (Hashable)
 import           GHC.Generics (Generic)
 import           Network.Socket (HostName, PortNumber)
@@ -98,8 +98,7 @@ withGossip self
   where
     sendIHaves env to xs =
         runNetwork env $
-            for_ xs $ \ihave ->
-                S.send to $ WirePayload (ProtocolPlumtree (P.IHaveM ihave))
+            S.send to $ WirePayload (ProtocolPlumtree (P.IHaveM xs))
 
     listen env = async $
         runNetwork env (S.listen (evalNetwork env) host port)
@@ -133,8 +132,8 @@ evalPlumtree env@Env { envApplyMessage, envLookupMessage } = go
                 `onException` runHyParView env (H.eject to)
             k >>= go
 
-        P.SendLazy to msg k -> do
-            runScheduler env $ PS.sendLazy to msg
+        P.SendLazy to ihaves k -> do
+            runScheduler env $ PS.sendLazy to ihaves
             k >>= go
 
         P.Later t mid action k -> do
