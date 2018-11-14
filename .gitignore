@@ -3,3 +3,4 @@ dist
 dist-newstyle
 Setup.hs
 .ghc.environment.*
+tags

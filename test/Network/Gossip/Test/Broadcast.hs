@@ -160,11 +160,11 @@ runBroadcast network node ma = runPlumtree (nodeEnv node) ma >>= eval
             onNode network to $ receive msg
             k >>= eval
 
-        SendLazy to ihave k -> do
+        SendLazy to ihaves k -> do
             task <-
                 async $ do
                     threadDelay 30000
-                    onNode network to $ receive (IHaveM ihave)
+                    onNode network to $ receive (IHaveM ihaves)
             atomically $ writeTQueue (netScheduler network) task
             k >>= eval
 

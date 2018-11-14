@@ -1,4 +1,5 @@
-{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE RankNTypes       #-}
 
 -- |
 -- Copyright   : 2018 Monadic GmbH
@@ -47,15 +48,16 @@ import           Control.Concurrent.STM
 import           Control.Monad.Reader
 import           Control.Monad.Trans.Cont
 import           Data.ByteString (ByteString)
-import           Data.Foldable (for_)
+import           Data.Foldable (foldl', foldlM, for_)
 import           Data.Hashable (Hashable)
 import           Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as Map
 import           Data.HashSet (HashSet)
 import qualified Data.HashSet as Set
+import           Data.Maybe (isNothing)
 import           Data.Time.Clock (NominalDiffTime)
 import           GHC.Generics (Generic)
-import           Lens.Micro (Lens', lens, over, set)
+import           Lens.Micro (Lens', lens, over, set, _1, _2, _3)
 import           Lens.Micro.Mtl (view)
 
 type MessageId = ByteString
@@ -85,14 +87,14 @@ instance Serialise n => Serialise (Gossip n)
 instance Hashable  n => Hashable  (Gossip n)
 
 data Message n =
-      GossipM (Gossip n)
-    | IHaveM  (IHave n)
+      GossipM (HashSet (Gossip n))
+    | IHaveM  (HashSet (IHave n))
     | Prune   n
-    | Graft   (Meta n)
+    | Graft   (HashSet (Meta n))
     deriving (Eq, Generic)
 
-instance Serialise n => Serialise (Message n)
-instance Hashable  n => Hashable  (Message n)
+instance (Eq n, Hashable n, Serialise n) => Serialise (Message n)
+instance Hashable n => Hashable (Message n)
 
 -- | Result of 'applyMessage'.
 data ApplyResult =
@@ -126,12 +128,12 @@ new self =
 -- Continuations ---------------------------------------------------------------
 
 data PlumtreeC n a =
-      ApplyMessage  MessageId       ByteString                  (ApplyResult      -> IO (PlumtreeC n a))
-    | LookupMessage MessageId                                   (Maybe ByteString -> IO (PlumtreeC n a))
-    | SendEager     n               (Message n)                 (IO (PlumtreeC n a))
-    | SendLazy      n               (IHave   n)                 (IO (PlumtreeC n a))
-    | Later         NominalDiffTime MessageId   (Plumtree n ()) (IO (PlumtreeC n a))
-    | Cancel        MessageId                                   (IO (PlumtreeC n a))
+      ApplyMessage  MessageId       ByteString                          (ApplyResult      -> IO (PlumtreeC n a))
+    | LookupMessage MessageId                                           (Maybe ByteString -> IO (PlumtreeC n a))
+    | SendEager     n               (Message n)                         (IO (PlumtreeC n a))
+    | SendLazy      n               (HashSet (IHave n))                 (IO (PlumtreeC n a))
+    | Later         NominalDiffTime MessageId           (Plumtree n ()) (IO (PlumtreeC n a))
+    | Cancel        MessageId                                           (IO (PlumtreeC n a))
     | Done          a
 
 sendEager :: n -> Message n -> Plumtree n ()
@@ -139,7 +141,7 @@ sendEager to msg =
     Plumtree $ ReaderT $ \_ -> ContT $ \k ->
         pure $ SendEager to msg (k ())
 
-sendLazy :: n -> IHave n -> Plumtree n ()
+sendLazy :: n -> HashSet (IHave n) -> Plumtree n ()
 sendLazy to ihave =
     Plumtree $ ReaderT $ \_ -> ContT $ \k ->
         pure $ SendLazy to ihave (k ())
@@ -223,7 +225,7 @@ broadcast
     -> Plumtree n ()
 broadcast mid msg = do
     self <- asks envSelf
-    push Gossip
+    push $ Set.singleton Gossip
         { gPayload = msg
         , gMeta    = Meta
            { metaMessageId = mid
@@ -234,78 +236,114 @@ broadcast mid msg = do
 
 -- | Receive and handle some 'Message' from the network.
 receive :: (Eq n, Hashable n) => Message n -> Plumtree n ()
-receive (GossipM g) = do
+receive (GossipM gs) = do
     Env { envSelf = self, envMissing = missing } <- ask
 
-    let sender = view (gMetaL . metaSenderL)    g
-    let mid    = view (gMetaL . metaMessageIdL) g
+    (gossip, grafts, demote) <-
+        let
+            allMessageIds = Set.map (view (gMetaL . metaMessageIdL)) gs
 
-    r <- applyMessage mid (gPayload g)
-    case r of
-        Applied retransmit -> do
-            -- Cancel any timers for this message.
-            liftIO . atomically . modifyTVar' missing $ Map.delete mid
-            cancel mid
-            -- Disseminate gossip.
-            push . set  (gMetaL . metaSenderL) self
-                 . over (gMetaL . metaRoundL)  (+1)
-                 $ g
-            moveToEager sender
-            for_ retransmit $ \re ->
-                let
-                    gmeta = Meta
-                          { metaMessageId = re
-                          , metaRound     = 0
-                          , metaSender    = self
-                          }
-                    graft = Graft gmeta
-                 in
-                    sendEager sender graft
-            -- Nb. Optimization (Section 3.8) left out for now, as it's unclear
-            -- what the value of 'threshold' should be. Riak also doesn't use
-            -- this.
+            -- Request retransmission only if message id is not in received
+            -- batch
+            addGraft sender mid grafts
+                | Set.member mid allMessageIds = grafts
+                | otherwise                    =
+                    Map.insertWith (<>) sender
+                                        (Set.singleton Meta
+                                            { metaMessageId = mid
+                                            , metaRound     = 0
+                                            , metaSender    = self
+                                            })
+                                        grafts
 
-        Stale retransmit -> do
-            liftIO . atomically . modifyTVar' missing $ Map.delete mid
-            case retransmit of
-                Nothing -> sendEager sender (Prune self)
-                Just re ->
-                    let
-                        gmeta = Meta
-                              { metaMessageId = re
-                              , metaRound     = 0
-                              , metaSender    = self
-                              }
-                        graft = Graft gmeta
-                     in
-                        sendEager sender graft
-            moveToLazy sender
+            go acc g = do
+                let sender = view (gMetaL . metaSenderL)    g
+                let mid    = view (gMetaL . metaMessageIdL) g
 
-        Error ->
-            -- TODO(kim): log this
-            pure ()
+                -- Cancel any timers for this message.
+                liftIO . atomically $
+                    modifyTVar' missing $ Map.delete mid
+                cancel mid
 
-receive (IHaveM ihave@(IHave Meta { metaMessageId = mid })) = do
-    missing <- asks envMissing
-    msg     <- lookupMessage mid
-    case msg of
-        Just _  -> pure ()
-        Nothing -> do
-            liftIO . atomically . modifyTVar' missing $ Map.insert mid ihave
-            scheduleGraft mid
+                r <- applyMessage mid (gPayload g)
+                case r of
+                    Applied retransmit ->
+                        pure
+                            -- Disseminate gossip.
+                            . over _1 (Set.insert g)
+                            -- Graft missing ancestors
+                            . maybe id (over _2 . addGraft sender) retransmit
+                            $ acc
+
+                    Stale retransmit -> do
+                        -- If we have no missing ancestors, prune ourselves
+                        when (isNothing retransmit) $
+                            sendEager sender (Prune self)
+                        pure
+                            -- Demote sender
+                            . over _3 (Set.insert sender)
+                            -- Graft missing ancestors
+                            . maybe id (over _2 . addGraft sender) retransmit
+                            $ acc
+
+                    Error ->
+                        -- TODO(kim): log this
+                        pure acc
+         in
+            foldlM go (Set.empty, Map.empty, Set.empty) gs
+
+    push $
+        flip Set.map gossip $
+              set  (gMetaL . metaSenderL) self
+            . over (gMetaL . metaRoundL)  (+1)
+
+    void . flip Map.traverseWithKey grafts $ \sender gs' -> do
+        moveToEager sender
+        sendEager sender $ Graft gs'
+
+    for_ demote moveToLazy
+
+receive (IHaveM is) = do
+    missing <-
+        let
+            go !acc ihave@(IHave meta) = do
+                msg <- lookupMessage (view metaMessageIdL meta)
+                case msg of
+                    Just _  -> pure acc
+                    Nothing -> pure $ Set.insert ihave acc
+         in
+            foldlM go Set.empty is
+
+    for_ missing scheduleGraft
 
 receive (Prune sender) =
     moveToLazy sender
 
-receive (Graft meta@Meta { metaSender = sender, metaMessageId = mid }) = do
+receive (Graft gs) = do
     self    <- asks envSelf
-    payload <- lookupMessage mid
-    moveToEager sender
-    for_ payload $ \p ->
-        sendEager sender $ GossipM Gossip
-            { gPayload = p
-            , gMeta    = meta { metaSender = self }
-            }
+    replies <-
+        let
+            go !acc meta = do
+                let sender = view metaSenderL meta
+                let mid    = view metaMessageIdL meta
+                payload <- lookupMessage mid
+                case payload of
+                    Nothing -> pure acc
+                    Just  p ->
+                        let
+                            reply = Set.singleton Gossip
+                               { gPayload = p
+                               , gMeta    = set metaSenderL self meta
+                               }
+                         in
+                            pure $
+                                Map.insertWith (<>) sender reply acc
+         in
+            foldlM go Map.empty gs
+
+    void $ flip Map.traverseWithKey replies $ \sender batch -> do
+        moveToEager sender
+        sendEager sender $ GossipM batch
 
 -- | Peer sampling service callback when a new peer is detected.
 --
@@ -346,8 +384,11 @@ neighborDown n = do
 
 -- Internal --------------------------------------------------------------------
 
-scheduleGraft :: (Eq n, Hashable n) => MessageId -> Plumtree n ()
-scheduleGraft mid =
+scheduleGraft :: (Eq n, Hashable n) => IHave n -> Plumtree n ()
+scheduleGraft ihave@(IHave Meta { metaMessageId = mid }) = do
+    missing <- asks envMissing
+    liftIO . atomically $
+        modifyTVar' missing $ Map.insert mid ihave
     later timeout1 mid $ go (Just timeout2)
   where
     timeout1 = 5 * 1000000
@@ -355,23 +396,32 @@ scheduleGraft mid =
 
     go next = do
         Env { envSelf = self, envMissing = missing } <- ask
-        ann <-
+        miss <-
             liftIO . atomically $ do
-                ann <- Map.lookup mid <$> readTVar missing
+                miss <- Map.lookup mid <$> readTVar missing
                 modifyTVar' missing $ Map.delete mid
-                pure ann
+                pure miss
 
-        for_ ann $ \(IHave meta) -> do
-            let sender = metaSender meta
-            let graft  = Graft meta { metaSender = self }
-            moveToEager sender
-            sendEager sender graft
+        let
+            add !acc (IHave meta) =
+                Map.insertWith
+                    (<>)
+                    (metaSender meta)
+                    (Set.singleton $ set metaSenderL self meta)
+                    acc
+
+            graftsBySender = foldl' add Map.empty miss
+         in
+            void . flip Map.traverseWithKey graftsBySender $ \sender gs -> do
+                moveToEager sender
+                sendEager sender $ Graft gs
 
         for_ next $ \timeout ->
             later timeout mid $ go Nothing
 
-push :: (Eq n, Hashable n) => Gossip n -> Plumtree n ()
-push g = do
+push :: (Eq n, Hashable n) => HashSet (Gossip n) -> Plumtree n ()
+push gs | Set.null gs = pure ()
+        | otherwise   = do
     Env { envSelf           = self
         , envEagerPushPeers = eagers
         , envLazyPushPeers  = lazies
@@ -379,17 +429,17 @@ push g = do
 
     (eagers', lazies') <-
         liftIO . atomically $
-            liftA2 (,)
-                   (Set.delete sender <$> readTVar eagers)
-                   (Set.delete sender <$> readTVar lazies)
+            let
+                senders = Set.map (view (gMetaL . metaSenderL)) gs
+                diff xs = Set.difference xs senders
+             in
+                liftA2 (,) (diff <$> readTVar eagers) (diff <$> readTVar lazies)
 
     for_ eagers' $ \to ->
-        sendEager to (GossipM g)
+        sendEager to (GossipM gs)
 
     for_ lazies' $ \to ->
-        sendLazy to $ IHave (gMeta g) { metaSender = self }
-  where
-    sender = view (gMetaL . metaSenderL) g
+        sendLazy to $ Set.map (IHave . set metaSenderL self . gMeta) gs
 
 -- Helpers ---------------------------------------------------------------------
 

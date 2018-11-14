@@ -94,13 +94,16 @@ newtype SchedulerT n m a = SchedulerT (ReaderT (Env n) m a)
 runSchedulerT :: Env n -> SchedulerT n m a -> m a
 runSchedulerT r (SchedulerT ma) = runReaderT ma r
 
-sendLazy :: (Eq n, Hashable n, MonadIO m) => n -> P.IHave n -> SchedulerT n m ()
-sendLazy to ihave = do
+sendLazy
+    :: (Eq n, Hashable n, MonadIO m)
+    => n
+    -> HashSet (P.IHave n)
+    -> SchedulerT n m ()
+sendLazy to ihaves = do
     queue <- asks envLazyQueue
     liftIO . atomically $ STMMap.focus upsert to queue
   where
-    upsert = Focus.alterM $
-        pure . Just . maybe (Set.singleton ihave) (Set.insert ihave)
+    upsert = Focus.alterM $ pure . Just . maybe ihaves (Set.union ihaves)
 
 later :: MonadIO m => NominalDiffTime -> P.MessageId -> IO () -> SchedulerT n m ()
 later timeout mid action = do
