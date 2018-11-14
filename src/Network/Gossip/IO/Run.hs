@@ -24,6 +24,7 @@ import qualified Network.Gossip.Plumtree.Scheduler as PS
 import           Codec.Serialise (Serialise)
 import           Control.Concurrent.Async (async, uninterruptibleCancel)
 import           Control.Exception.Safe (bracket, onException, tryAny)
+import           Control.Monad (when)
 import           Data.Bifunctor (second)
 import           Data.ByteString (ByteString)
 import           Data.Foldable (toList)
@@ -193,12 +194,16 @@ evalNetwork
 evalNetwork env = go
   where
     go = \case
-        S.PayloadReceived _from (ProtocolHyParView p) k -> do
-            runHyParView env $ H.receive p
+        S.PayloadReceived from (ProtocolHyParView p) k -> do
+            when (H.isAuthorised from p) $
+                runHyParView env $ H.receive p
             k >>= go
 
-        S.PayloadReceived _from (ProtocolPlumtree p) k -> do
-            runPlumtree  env $ P.receive p
+        S.PayloadReceived from (ProtocolPlumtree p) k -> do
+            if P.isAuthorised from p then
+                runPlumtree env $ P.receive p
+            else
+                runHyParView env $ H.eject from
             k >>= go
 
         S.ConnectionLost to k -> do

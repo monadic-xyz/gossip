@@ -42,6 +42,7 @@ module Network.Gossip.HyParView
     , activeView
     , passiveView
 
+    , isAuthorised
     , receive
     , eject
     , joinAny
@@ -241,6 +242,13 @@ activeView = asks envActive >>= liftIO . fmap keysSet . readTVarIO
 -- | Obtain a snapshot of the passive view.
 passiveView :: HyParView n (HashSet n)
 passiveView = asks envPassive >>= liftIO . readTVarIO
+
+isAuthorised :: Eq n => n -> RPC n -> Bool
+isAuthorised sender rpc =
+    case rpcPayload rpc of
+        Shuffle{}     -> True
+        ForwardJoin{} -> True
+        _             -> rpcSender rpc == sender
 
 -- | Env an incoming 'RPC' and return a (possibly empty) list of outgoing
 -- 'RPC's.

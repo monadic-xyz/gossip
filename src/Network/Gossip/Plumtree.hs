@@ -1,5 +1,7 @@
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE RankNTypes       #-}
+{-# LANGUAGE FlexibleContexts       #-}
+{-# LANGUAGE FlexibleInstances      #-}
+{-# LANGUAGE FunctionalDependencies #-}
+{-# LANGUAGE RankNTypes             #-}
 
 -- |
 -- Copyright   : 2018 Monadic GmbH
@@ -36,6 +38,7 @@ module Network.Gossip.Plumtree
     , resetPeers
 
     , broadcast
+    , isAuthorised
     , receive
     , neighborUp
     , neighborDown
@@ -234,6 +237,16 @@ broadcast mid msg = do
            }
         }
 
+isAuthorised :: Eq n => n -> Message n -> Bool
+isAuthorised sender = \case
+    IHaveM xs   -> Set.null xs || senderMatches sender xs
+    Graft  xs   -> Set.null xs || senderMatches sender xs
+    Prune  from -> from == sender
+    _           -> True
+  where
+    senderMatches :: (Foldable t, HasMeta a n, Eq n) => n -> t a -> Bool
+    senderMatches s xs = all ((== s) . view (metaL . metaSenderL)) xs
+
 -- | Receive and handle some 'Message' from the network.
 receive :: (Eq n, Hashable n) => Message n -> Plumtree n ()
 receive (GossipM gs) = do
@@ -241,7 +254,7 @@ receive (GossipM gs) = do
 
     (gossip, grafts, demote) <-
         let
-            allMessageIds = Set.map (view (gMetaL . metaMessageIdL)) gs
+            allMessageIds = Set.map (view (metaL . metaMessageIdL)) gs
 
             -- Request retransmission only if message id is not in received
             -- batch
@@ -257,8 +270,8 @@ receive (GossipM gs) = do
                                         grafts
 
             go acc g = do
-                let sender = view (gMetaL . metaSenderL)    g
-                let mid    = view (gMetaL . metaMessageIdL) g
+                let sender = view (metaL . metaSenderL)    g
+                let mid    = view (metaL . metaMessageIdL) g
 
                 -- Cancel any timers for this message.
                 liftIO . atomically $
@@ -294,8 +307,8 @@ receive (GossipM gs) = do
 
     push $
         flip Set.map gossip $
-              set  (gMetaL . metaSenderL) self
-            . over (gMetaL . metaRoundL)  (+1)
+              set  (metaL . metaSenderL) self
+            . over (metaL . metaRoundL)  (+1)
 
     void . flip Map.traverseWithKey grafts $ \sender gs' -> do
         moveToEager sender
@@ -430,7 +443,7 @@ push gs | Set.null gs = pure ()
     (eagers', lazies') <-
         liftIO . atomically $
             let
-                senders = Set.map (view (gMetaL . metaSenderL)) gs
+                senders = Set.map (view (metaL . metaSenderL)) gs
                 diff xs = Set.difference xs senders
              in
                 liftA2 (,) (diff <$> readTVar eagers) (diff <$> readTVar lazies)
@@ -483,5 +496,17 @@ metaRoundL = lens metaRound (\s a -> s { metaRound = a })
 metaSenderL :: Lens' (Meta n) n
 metaSenderL = lens metaSender (\s a -> s { metaSender = a })
 
-gMetaL :: Lens' (Gossip n) (Meta n)
-gMetaL = lens gMeta (\s a -> s { gMeta = a })
+class HasMeta a n | a -> n where
+    metaL :: Lens' a (Meta n)
+
+instance HasMeta (Meta n) n where
+    metaL = id
+    {-# INLINE metaL #-}
+
+instance HasMeta (Gossip n) n where
+    metaL = lens gMeta (\s a -> s { gMeta = a })
+    {-# INLINE metaL #-}
+
+instance HasMeta (IHave n) n where
+    metaL = lens (\(IHave m) -> m) (\_ a -> IHave a)
+    {-# INLINE metaL #-}
