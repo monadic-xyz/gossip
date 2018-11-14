@@ -1,19 +1,32 @@
 module Network.Gossip.Test.Gen
     ( NodeId
     , Contacts
-    , NetworkBounds
     , SplitMixSeed
+    , LinkState (..)
+    , InfiniteListOf (..)
+    , renderInf
+
+    , NetworkBounds
     , defaultNetworkBounds
+
     , connectedContacts
     , disconnectedContacts
     , circularContacts
+
+    , linkState
+
     , splitMixSeed
+
+    , infiniteListOf
     )
 where
 
 import qualified Algebra.Graph.Class as Alga
 import           Algebra.Graph.Relation.Symmetric
-                 (SymmetricRelation, fromRelation, toRelation)
+                 ( SymmetricRelation
+                 , fromRelation
+                 , toRelation
+                 )
 import qualified Algebra.Graph.ToGraph as Alga
 import           Control.Applicative (liftA2)
 import           Data.Bifunctor (second)
@@ -25,10 +38,31 @@ import           Data.Word (Word16, Word64)
 
 import           Hedgehog
 import qualified Hedgehog.Gen as Gen
+import qualified Hedgehog.Gen.QuickCheck as Gen
 import qualified Hedgehog.Range as Range
+import qualified Test.QuickCheck.Gen as QC
+import qualified Test.QuickCheck.Hedgehog as Gen
 
-type NodeId   = Word16
-type Contacts = [(NodeId, [NodeId])]
+-- Types -----------------------------------------------------------------------
+
+type NodeId       = Word16
+type Contacts     = [(NodeId, [NodeId])]
+type SplitMixSeed = (Word64, Word64)
+type Milliseconds = Int
+
+data LinkState =
+      Fast
+    | Slow  Milliseconds
+    | Flaky Milliseconds Milliseconds
+    | Down
+    deriving (Eq, Show)
+
+newtype InfiniteListOf a = InfiniteListOf { fromInfiniteListOf :: [a] }
+
+renderInf :: Show a => Int -> InfiniteListOf a -> String
+renderInf n (InfiniteListOf as) = showList (take n as) ""
+
+---- Config --------------------------------------------------------------------
 
 data NetworkBounds = NetworkBounds
     { netMinNodes    :: Int
@@ -42,6 +76,10 @@ defaultNetworkBounds = NetworkBounds
     , netMaxNodes    = 100
     , netMaxContacts = 5
     }
+
+-- Generators ------------------------------------------------------------------
+
+---- Contacts ------------------------------------------------------------------
 
 connectedContacts :: MonadGen m => NetworkBounds -> m Contacts
 connectedContacts bounds = do
@@ -99,6 +137,35 @@ circularContacts bounds =
     toContacts :: [(NodeId, NodeId)] -> Contacts
     toContacts = map (second pure)
 
+---- LinkState -----------------------------------------------------------------
+
+linkState :: MonadGen m => Int -> m LinkState
+linkState maxLatency = Gen.choice
+    [ pure Fast
+    , Slow <$> Gen.int (Range.constantFrom 5 1 maxLatency)
+    , flaky
+    , pure Down
+    ]
+  where
+    flaky = do
+        lower <- Gen.int (Range.constantFrom 5 0 maxLatency)
+        Flaky lower <$> Gen.int (Range.constant lower maxLatency)
+
+---- SplitMixSeed --------------------------------------------------------------
+
+splitMixSeed :: MonadGen m => m SplitMixSeed
+splitMixSeed = liftA2 (,) word64 word64
+  where
+    word64 = Gen.prune $ Gen.word64 Range.constantBounded
+
+---- Util ----------------------------------------------------------------------
+
+infiniteListOf :: Gen a -> Gen (InfiniteListOf a)
+infiniteListOf =
+    fmap InfiniteListOf . Gen.quickcheck . QC.infiniteListOf . Gen.hedgehog
+
+-- Internal --------------------------------------------------------------------
+
 nodeIds :: MonadGen m => NetworkBounds -> m (Set NodeId)
 nodeIds NetworkBounds{..} =
     Gen.set (Range.constantFrom netMinNodes netMinNodes netMaxContacts)
@@ -106,10 +173,3 @@ nodeIds NetworkBounds{..} =
 
 nodeId :: MonadGen m => Int -> m NodeId
 nodeId maxNodes = Gen.word16 (Range.constant 0 (fromIntegral $ maxNodes - 1))
-
-type SplitMixSeed = (Word64, Word64)
-
-splitMixSeed :: MonadGen m => m SplitMixSeed
-splitMixSeed = liftA2 (,) word64 word64
-  where
-    word64 = Gen.prune $ Gen.word64 Range.constantBounded

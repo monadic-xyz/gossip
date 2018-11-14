@@ -51,7 +51,7 @@ import           Control.Concurrent.STM
 import           Control.Monad.Reader
 import           Control.Monad.Trans.Cont
 import           Data.ByteString (ByteString)
-import           Data.Foldable (foldl', foldlM, for_)
+import           Data.Foldable (foldl', foldlM, for_, traverse_)
 import           Data.Hashable (Hashable)
 import           Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as Map
@@ -70,13 +70,13 @@ data Meta n = Meta
     { metaMessageId :: MessageId
     , metaRound     :: Round
     , metaSender    :: n
-    } deriving (Eq, Generic)
+    } deriving (Eq, Show, Generic)
 
 instance Serialise n => Serialise (Meta n)
 instance Hashable  n => Hashable  (Meta n)
 
 newtype IHave n = IHave (Meta n)
-    deriving (Eq, Generic)
+    deriving (Eq, Show, Generic)
 
 instance Serialise n => Serialise (IHave n)
 instance Hashable  n => Hashable  (IHave n)
@@ -84,7 +84,7 @@ instance Hashable  n => Hashable  (IHave n)
 data Gossip n = Gossip
     { gPayload :: ByteString
     , gMeta    :: Meta n
-    } deriving (Eq, Generic)
+    } deriving (Eq, Show, Generic)
 
 instance Serialise n => Serialise (Gossip n)
 instance Hashable  n => Hashable  (Gossip n)
@@ -94,7 +94,7 @@ data Message n =
     | IHaveM  (HashSet (IHave n))
     | Prune   n
     | Graft   (HashSet (Meta n))
-    deriving (Eq, Generic)
+    deriving (Eq, Show, Generic)
 
 instance (Eq n, Hashable n, Serialise n) => Serialise (Message n)
 instance Hashable n => Hashable (Message n)
@@ -120,7 +120,7 @@ data Env n = Env
     -- ^ The peers to eager push to.
     , envLazyPushPeers  :: TVar (HashSet n)
     -- ^ The peers to lazy push to.
-    , envMissing        :: TVar (HashMap MessageId (IHave n))
+    , envMissing        :: TVar (HashMap MessageId (HashSet (IHave n)))
     -- ^ Received 'IHave's for which we haven't requested the value yet.
     }
 
@@ -261,13 +261,7 @@ receive (GossipM gs) = do
             addGraft sender mid grafts
                 | Set.member mid allMessageIds = grafts
                 | otherwise                    =
-                    Map.insertWith (<>) sender
-                                        (Set.singleton Meta
-                                            { metaMessageId = mid
-                                            , metaRound     = 0
-                                            , metaSender    = self
-                                            })
-                                        grafts
+                    Map.insertWith (<>) sender (Set.singleton mid) grafts
 
             go acc g = do
                 let sender = view (metaL . metaSenderL)    g
@@ -310,11 +304,17 @@ receive (GossipM gs) = do
               set  (metaL . metaSenderL) self
             . over (metaL . metaRoundL)  (+1)
 
-    void . flip Map.traverseWithKey grafts $ \sender gs' -> do
-        moveToEager sender
-        sendEager sender $ Graft gs'
+    traverse_ (moveToEager . view (metaL . metaSenderL)) gs
 
-    for_ demote moveToLazy
+    void . flip Map.traverseWithKey grafts $ \sender mids ->
+        for_ mids $ \mid ->
+            scheduleGraft $ IHave Meta
+                { metaSender    = sender
+                , metaRound     = 0
+                , metaMessageId = mid
+                }
+
+    traverse_ moveToLazy demote
 
 receive (IHaveM is) = do
     missing <-
@@ -327,7 +327,7 @@ receive (IHaveM is) = do
          in
             foldlM go Set.empty is
 
-    for_ missing scheduleGraft
+    traverse_ scheduleGraft missing
 
 receive (Prune sender) =
     moveToLazy sender
@@ -393,7 +393,11 @@ neighborDown n = do
     liftIO . atomically $ do
         modifyTVar' eagers  $ Set.delete n
         modifyTVar' lazies  $ Set.delete n
-        modifyTVar' missing $ Map.filter (\(IHave meta) -> metaSender meta /= n)
+        modifyTVar' missing $ Map.mapMaybe $ \ihaves ->
+            let
+                ihaves' = Set.filter ((/= n) . view (metaL . metaSenderL)) ihaves
+             in
+                if Set.null ihaves' then Nothing else Just ihaves'
 
 -- Internal --------------------------------------------------------------------
 
@@ -401,7 +405,7 @@ scheduleGraft :: (Eq n, Hashable n) => IHave n -> Plumtree n ()
 scheduleGraft ihave@(IHave Meta { metaMessageId = mid }) = do
     missing <- asks envMissing
     liftIO . atomically $
-        modifyTVar' missing $ Map.insert mid ihave
+        modifyTVar' missing $ Map.insertWith (<>) mid (Set.singleton ihave)
     later timeout1 mid $ go (Just timeout2)
   where
     timeout1 = 5 * 1000000
@@ -409,28 +413,31 @@ scheduleGraft ihave@(IHave Meta { metaMessageId = mid }) = do
 
     go next = do
         Env { envSelf = self, envMissing = missing } <- ask
+
         miss <-
-            liftIO . atomically $ do
-                miss <- Map.lookup mid <$> readTVar missing
-                modifyTVar' missing $ Map.delete mid
-                pure miss
+            liftIO . atomically $
+                Map.lookup mid <$> readTVar missing
 
-        let
-            add !acc (IHave meta) =
-                Map.insertWith
-                    (<>)
-                    (metaSender meta)
-                    (Set.singleton $ set metaSenderL self meta)
-                    acc
+        for_ miss $ \miss' ->
+            let
+                add !acc (IHave meta) =
+                    Map.insertWith
+                        (<>)
+                        (metaSender meta)
+                        (Set.singleton $ set metaSenderL self meta)
+                        acc
 
-            graftsBySender = foldl' add Map.empty miss
-         in
-            void . flip Map.traverseWithKey graftsBySender $ \sender gs -> do
-                moveToEager sender
-                sendEager sender $ Graft gs
+                graftsBySender = foldl' add Map.empty miss'
+             in
+                void . flip Map.traverseWithKey graftsBySender $ \sender gs -> do
+                    moveToEager sender
+                    sendEager sender $ Graft gs
 
-        for_ next $ \timeout ->
-            later timeout mid $ go Nothing
+        case next of
+            Just timeout -> later timeout mid $ go Nothing
+            Nothing      ->
+                liftIO . atomically $
+                    modifyTVar' missing (Map.delete mid)
 
 push :: (Eq n, Hashable n) => HashSet (Gossip n) -> Plumtree n ()
 push gs | Set.null gs = pure ()

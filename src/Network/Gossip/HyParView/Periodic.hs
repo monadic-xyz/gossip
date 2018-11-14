@@ -15,7 +15,11 @@ import qualified Network.Gossip.HyParView as H
 
 import           Control.Concurrent (threadDelay)
 import           Control.Concurrent.Async
-                 (Async, Concurrently(..), async, uninterruptibleCancel)
+                 ( Async
+                 , Concurrently(..)
+                 , async
+                 , uninterruptibleCancel
+                 )
 import           Control.Exception.Safe (bracket)
 import           Control.Monad (forever)
 import           Data.Hashable (Hashable)

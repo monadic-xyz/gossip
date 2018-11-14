@@ -30,6 +30,7 @@ common common
       , base
       , bytestring
       , containers
+      , safe-exceptions
       , splitmix
       , stm
       , transformers
@@ -86,7 +87,6 @@ library
       , mtl
       , network
       , random
-      , safe-exceptions
       , serialise
       , stm-containers < 1
       , text
@@ -104,11 +104,15 @@ test-suite tests
         algebraic-graphs == 0.2.*
       , gossip
       , hedgehog
+      , hedgehog-quickcheck
+      , QuickCheck
+      , random
 
     other-modules:
         Network.Gossip.Test.Assert
         Network.Gossip.Test.Broadcast
         Network.Gossip.Test.Gen
+        Network.Gossip.Test.Helpers
         Network.Gossip.Test.Membership
 
     ghc-options:

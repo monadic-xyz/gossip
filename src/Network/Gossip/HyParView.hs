@@ -58,7 +58,11 @@ import           Codec.Serialise (Serialise)
 import           Control.Applicative (liftA2)
 import           Control.Concurrent.STM
 import           Control.Exception.Safe
-                 (Exception, SomeException, toException, tryAny)
+                 ( Exception
+                 , SomeException
+                 , toException
+                 , tryAny
+                 )
 import           Control.Monad (when)
 import           Control.Monad.Reader
 import           Control.Monad.Trans.Cont
