@@ -28,6 +28,7 @@ import qualified Data.List.NonEmpty as NonEmpty
 import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import           Data.Traversable (for)
+import           Prelude hiding (round)
 import           System.Random (randomR, split)
 import           System.Random.SplitMix (SMGen, seedSMGen')
 
@@ -151,7 +152,8 @@ data Network = Network
     }
 
 data Node = Node
-    { nodeEnv   :: Env NodeId
+    { nodeId    :: NodeId
+    , nodeEnv   :: Env NodeId
     , nodeStore :: Store
     }
 
@@ -210,7 +212,7 @@ initNetwork rng contacts links = do
         for contacts $ \(self, peers) -> do
             hdl   <- new self
             store <- newIORef mempty
-            pure (self, peers, Node hdl store)
+            pure (self, peers, Node self hdl store)
 
     tq   <- newTaskQueue
     rng' <- newIORef rng
@@ -241,10 +243,15 @@ runBroadcast network node ma = runPlumtree (nodeEnv node) ma >>= eval
             onNode network to (receive msg)
             k >>= eval
 
-        SendLazy to ihaves k -> do
+        SendLazy to round ihaves k -> do
             scheduleTask (netTaskQueue network) $ do
                 threadDelay 30000
-                onNode network to (receive (IHaveM ihaves))
+                onNode network to $
+                    receive RPC
+                        { rpcSender  = nodeId node
+                        , rpcRound   = Just round
+                        , rpcPayload = IHave ihaves
+                        }
             k >>= eval
 
         Later _ _ action k -> do

@@ -83,7 +83,6 @@ library
       , hashable
       , list-t
       , microlens
-      , microlens-mtl
       , mtl
       , network
       , random

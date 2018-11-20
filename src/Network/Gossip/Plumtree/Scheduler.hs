@@ -32,10 +32,11 @@ import           Control.Concurrent.STM (atomically)
 import           Control.Exception.Safe
 import           Control.Monad (forever)
 import           Control.Monad.Reader
-import           Data.Foldable (traverse_)
+import           Data.Foldable (for_, traverse_)
 import           Data.Hashable (Hashable)
+import           Data.HashMap.Strict (HashMap)
+import qualified Data.HashMap.Strict as HashMap
 import           Data.HashSet (HashSet)
-import qualified Data.HashSet as Set
 import           Data.IORef (IORef, mkWeakIORef, newIORef)
 import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -48,7 +49,7 @@ import qualified STMContainers.Map as STMMap
 
 data Env n = Env
     { envFlushInterval :: LazyFlushInterval
-    , envLazyQueue     :: STMMap.Map n (HashSet (P.IHave n))
+    , envLazyQueue     :: STMMap.Map n (HashMap P.Round (HashSet P.MessageId))
     , envDeferred      :: STMMap.Map P.MessageId (Map Unique (Async ()))
     , _alive           :: IORef ()
     }
@@ -59,7 +60,7 @@ new :: LazyFlushInterval -> IO (Env n)
 new envFlushInterval = do
     envLazyQueue <- STMMap.newIO
     envDeferred  <- STMMap.newIO
-    _alive     <- newIORef ()
+    _alive       <- newIORef ()
     let hdl = Env {..}
 
     void $ mkWeakIORef _alive (destroy hdl)
@@ -75,7 +76,11 @@ destroy Env { envDeferred } = do
             $ STMMap.stream envDeferred
     sequence_ deferreds
 
-withScheduler :: Env n -> (n -> HashSet (P.IHave n) -> IO ()) -> IO a -> IO a
+withScheduler
+    :: Env n
+    -> (n -> P.Round -> HashSet P.MessageId -> IO ())
+    -> IO a
+    -> IO a
 withScheduler hdl send k =
     bracket (runFlusher hdl send) shutdown (const k)
   where
@@ -97,13 +102,15 @@ runSchedulerT r (SchedulerT ma) = runReaderT ma r
 sendLazy
     :: (Eq n, Hashable n, MonadIO m)
     => n
-    -> HashSet (P.IHave n)
+    -> P.Round
+    -> HashSet P.MessageId
     -> SchedulerT n m ()
-sendLazy to ihaves = do
+sendLazy to r mids = do
     queue <- asks envLazyQueue
     liftIO . atomically $ STMMap.focus upsert to queue
   where
-    upsert = Focus.alterM $ pure . Just . maybe ihaves (Set.union ihaves)
+    upsert = Focus.alterM $
+        pure . Just . maybe (HashMap.singleton r mids) (HashMap.insertWith (<>) r mids)
 
 later :: MonadIO m => NominalDiffTime -> P.MessageId -> IO () -> SchedulerT n m ()
 later timeout mid action = do
@@ -139,7 +146,10 @@ cancel mid = do
 
 -- Internal --------------------------------------------------------------------
 
-runFlusher :: Env n -> (n -> HashSet (P.IHave n) -> IO ()) -> IO (Async Void)
+runFlusher
+    :: Env n
+    -> (n -> P.Round -> HashSet P.MessageId -> IO ())
+    -> IO (Async Void)
 runFlusher hdl send = async . forever $ do
     sleep $ envFlushInterval hdl
     ihaves <-
@@ -147,7 +157,8 @@ runFlusher hdl send = async . forever $ do
             ihaves <- ListT.toList $ STMMap.stream (envLazyQueue hdl)
             ihaves `seq` STMMap.deleteAll (envLazyQueue hdl)
             pure ihaves
-    traverse_ (uncurry send) ihaves
+    for_ ihaves $ \(to, byround) ->
+        flip HashMap.traverseWithKey byround $ send to
 
 sleep :: NominalDiffTime -> IO ()
 sleep t = threadDelay $ toSeconds t * 1000000
