@@ -31,11 +31,12 @@ import           Data.Foldable (toList)
 import           Data.Hashable (Hashable)
 import           GHC.Generics (Generic)
 import           Network.Socket (HostName, PortNumber)
+import           Prelude hiding (round)
 import qualified System.Random.SplitMix as SplitMix
 
 data ProtocolMessage n =
-      ProtocolPlumtree  (P.Message n)
-    | ProtocolHyParView (H.RPC     n)
+      ProtocolPlumtree  (P.RPC n)
+    | ProtocolHyParView (H.RPC n)
     deriving (Eq, Generic)
 
 instance (Eq n, Hashable n, Serialise n) => Serialise (ProtocolMessage n)
@@ -97,9 +98,13 @@ withGossip self
             bootstrap env
             k env
   where
-    sendIHaves env to xs =
+    sendIHaves env to round xs =
         runNetwork env $
-            S.send to $ WirePayload (ProtocolPlumtree (P.IHaveM xs))
+            S.send to . WirePayload . ProtocolPlumtree $ P.RPC
+                { P.rpcSender  = self
+                , P.rpcRound   = Just round
+                , P.rpcPayload = P.IHave xs
+                }
 
     listen env = async $
         runNetwork env (S.listen (evalNetwork env) host port)
@@ -133,8 +138,8 @@ evalPlumtree env@Env { envApplyMessage, envLookupMessage } = go
                 `onException` runHyParView env (H.eject to)
             k >>= go
 
-        P.SendLazy to ihaves k -> do
-            runScheduler env $ PS.sendLazy to ihaves
+        P.SendLazy to round ihaves k -> do
+            runScheduler env $ PS.sendLazy to round ihaves
             k >>= go
 
         P.Later t mid action k -> do

@@ -2,4 +2,5 @@ resolver: lts-12.17
 packages:
 - .
 extra-deps:
+- hedgehog-quickcheck-0.1
 - serialise-0.2.1.0
