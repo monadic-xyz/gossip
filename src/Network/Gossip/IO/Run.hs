@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 -- |
 -- Copyright   : 2018 Monadic GmbH
 -- License     : BSD3
@@ -23,15 +25,20 @@ import qualified Network.Gossip.Plumtree.Scheduler as PS
 
 import           Codec.Serialise (Serialise)
 import           Control.Concurrent.Async (async, uninterruptibleCancel)
+import           Control.Concurrent.TokenBucket
 import           Control.Exception.Safe (bracket, onException, tryAny)
-import           Control.Monad (when)
+import           Control.Monad (unless)
+import           Control.Monad.IO.Class (liftIO)
 import           Data.Bifunctor (second)
 import           Data.ByteString (ByteString)
 import           Data.Foldable (toList)
 import           Data.Hashable (Hashable)
+import           Data.IORef
+import           Data.Tuple (swap)
 import           GHC.Generics (Generic)
 import           Network.Socket (HostName, PortNumber)
 import           Prelude hiding (round)
+import           System.Clock (Clock(Monotonic), getTime)
 import qualified System.Random.SplitMix as SplitMix
 
 data ProtocolMessage n =
@@ -48,6 +55,7 @@ data Env n = Env
     , envIO            :: S.Env  n        (ProtocolMessage (Peer n))
     , envApplyMessage  :: P.MessageId -> ByteString -> IO P.ApplyResult
     , envLookupMessage :: P.MessageId -> IO (Maybe ByteString)
+    , envTokenBucket   :: IORef Bucket
     }
 
 withGossip
@@ -86,10 +94,11 @@ withGossip self
            contacts
            k
     = do
-    envPlumtree  <- P.new self
-    envHyParView <- H.new self hcfg =<< SplitMix.initSMGen
-    envIO        <- S.new handshake
-    envScheduler <- PS.new flushInterval
+    envPlumtree    <- P.new self
+    envHyParView   <- H.new self hcfg =<< SplitMix.initSMGen
+    envIO          <- S.new handshake
+    envScheduler   <- PS.new flushInterval
+    envTokenBucket <- newIORef =<< bucketNew
     let env = Env {..}
 
     PS.withScheduler envScheduler (sendIHaves env) $
@@ -200,15 +209,19 @@ evalNetwork env = go
   where
     go = \case
         S.PayloadReceived from (ProtocolHyParView p) k -> do
-            when (H.isAuthorised from p) $
-                runHyParView env $ H.receive p
+            if H.isAuthorised from p then
+                runHyParView env $ do
+                    limit <- isRateLimited
+                    unless limit $ H.receive p -- FIXME: go away if limited?
+            else
+                unauthorised from
             k >>= go
 
         S.PayloadReceived from (ProtocolPlumtree p) k -> do
             if P.isAuthorised from p then
                 runPlumtree env $ P.receive p
             else
-                runHyParView env $ H.eject from
+                unauthorised from
             k >>= go
 
         S.ConnectionLost to k -> do
@@ -216,6 +229,25 @@ evalNetwork env = go
             k >>= go
 
         S.Done a -> pure a
+
+    unauthorised peer = do
+        runHyParView env $ H.eject peer
+        runNetwork   env $ S.send  peer $ WireGoaway (pure "Unauthorised")
+
+    isRateLimited = do
+        conn'd <- H.isFullyConnected
+        if conn'd then do
+            let randomPromotionInterval = 5 -- FIXME: periodic conf
+            let rate = mkRate 1 randomPromotionInterval
+            limit <- liftIO $ do
+                now <- getTime Monotonic
+                atomicModifyIORef' (envTokenBucket env) $ \buck ->
+                    swap $ bucketTake buck now rate 1
+            pure $ case limit of
+                Fail{} -> True
+                Ok{}   -> False
+        else
+            pure False
 
 --------------------------------------------------------------------------------
 

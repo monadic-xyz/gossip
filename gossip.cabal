@@ -73,12 +73,14 @@ library
         Network.Gossip.Plumtree.Scheduler
 
     other-modules:
+        Control.Concurrent.TokenBucket
         Network.Gossip.HyParView.Internal
         Network.Socket.Serialise
         Paths_gossip
 
     build-depends:
-        conduit > 1.3
+        clock
+      , conduit > 1.3
       , focus
       , hashable
       , list-t

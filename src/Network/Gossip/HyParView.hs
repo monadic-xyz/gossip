@@ -42,6 +42,7 @@ module Network.Gossip.HyParView
     , activeView
     , passiveView
 
+    , isFullyConnected
     , isAuthorised
     , receive
     , eject
@@ -247,6 +248,16 @@ activeView = asks envActive >>= liftIO . fmap keysSet . readTVarIO
 passiveView :: HyParView n (HashSet n)
 passiveView = asks envPassive >>= liftIO . readTVarIO
 
+isFullyConnected :: (Eq n, Hashable n) => HyParView n Bool
+isFullyConnected = do
+    Config { cfgMaxActive, cfgMaxPassive } <- asks envConfig
+    Peers  { active, passive }             <- getPeers'
+    let
+        total = Set.size active + Set.size passive
+        max'  = fromIntegral $ cfgMaxActive + cfgMaxPassive
+     in
+        pure $ total >= max'
+
 isAuthorised :: Eq n => n -> RPC n -> Bool
 isAuthorised sender rpc =
     case rpcPayload rpc of
@@ -256,8 +267,6 @@ isAuthorised sender rpc =
 
 -- | Env an incoming 'RPC' and return a (possibly empty) list of outgoing
 -- 'RPC's.
---
--- Rethrows any exceptions raised by attempting to establish new connections.
 receive :: (Eq n, Hashable n) => RPC n -> HyParView n ()
 receive RPC { rpcSender, rpcPayload } = case rpcPayload of
     Join -> do
