@@ -40,33 +40,29 @@ data BucketTake =
     | Ok   { remaining :: Double }
 
 bucketTake :: Bucket -> TimeSpec -> Rate -> Double -> (BucketTake, Bucket)
-bucketTake b now rate n =
-    let
-        capacity = fromIntegral $ freq rate
-        last     = let
-                       last' = created b + fromNanos (elapsed b)
-                    in
-                       if now < last' then now else last'
-        tokens   = added b - taken b
-        elapsed' = now - last
-        added'   = let
-                       added'' = rateTokens rate (toNanos elapsed')
-                       missing = capacity - tokens
-                    in
-                       if added'' > missing then missing else added''
-        have     = tokens + added'
-     in
-        if n > have then
-            (Fail have, b)
-        else
-            let
-                b' = b { elapsed = elapsed b + toNanos elapsed'
-                       , added   = added   b + added'
-                       , taken   = taken   b + n
-                       }
-             in
-                (Ok (added b' - taken b'), b')
+bucketTake b now rate n
+    | n > have  = (Fail have, b)
+    | otherwise =
+        let
+            b' = b { elapsed = elapsed b + toNanos elapsed'
+                   , added   = added   b + added'
+                   , taken   = taken   b + n
+                   }
+         in
+            (Ok (added b' - taken b'), b')
   where
+    capacity  = fromIntegral $ freq rate
+    last      = case created b + fromNanos (elapsed b) of
+                    x | now < x   -> now
+                      | otherwise -> x
+    tokens    = added b - taken b
+    elapsed'  = now - last
+    added'    = case rateTokens rate (toNanos elapsed') of
+                    x | missing <- capacity - tokens
+                      , x > missing -> missing
+                      | otherwise   -> x
+    have      = tokens + added'
+
     toNanos   = fromIntegral . toNanoSecs
     fromNanos = fromNanoSecs . fromIntegral
 
@@ -80,9 +76,8 @@ mkRate = Rate
 
 rateTokens :: Rate -> Duration -> Double
 rateTokens Rate { freq, per } d
-    | freq     == 0
-   || per      == 0
-   || interval == 0 = 0
-    | otherwise     = fromIntegral d / fromIntegral interval
+    | zero      = 0
+    | otherwise = fromIntegral d / fromIntegral interval
   where
     interval = per `div` fromIntegral freq
+    zero     = or [freq == 0, per == 0, interval == 0]
