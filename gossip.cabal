@@ -73,7 +73,7 @@ library
         Network.Gossip.Plumtree.Scheduler
 
     other-modules:
-        Control.Concurrent.TokenBucket
+        Data.TokenBucket
         Network.Gossip.HyParView.Internal
         Network.Socket.Serialise
         Paths_gossip

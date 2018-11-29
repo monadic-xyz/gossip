@@ -1,4 +1,4 @@
-module Control.Concurrent.TokenBucket
+module Data.TokenBucket
     ( Bucket
     , Rate
     , BucketTake (..)

@@ -25,7 +25,6 @@ import qualified Network.Gossip.Plumtree.Scheduler as PS
 
 import           Codec.Serialise (Serialise)
 import           Control.Concurrent.Async (async, uninterruptibleCancel)
-import           Control.Concurrent.TokenBucket
 import           Control.Exception.Safe (bracket, onException, tryAny)
 import           Control.Monad (unless)
 import           Control.Monad.IO.Class (liftIO)
@@ -34,6 +33,7 @@ import           Data.ByteString (ByteString)
 import           Data.Foldable (toList)
 import           Data.Hashable (Hashable)
 import           Data.IORef
+import           Data.TokenBucket
 import           Data.Tuple (swap)
 import           GHC.Generics (Generic)
 import           Network.Socket (HostName, PortNumber)
