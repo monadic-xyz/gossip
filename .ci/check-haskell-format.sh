@@ -4,7 +4,7 @@ set -euo pipefail
 
 shopt -s globstar
 
-PATH=$HOME/.local/bin:$PATH
+PATH=$HOME/.cabal/bin:$PATH
 
 base=$(mktemp -d "/tmp/gossip-base.XXXXX")
 for f in **/**.hs; do

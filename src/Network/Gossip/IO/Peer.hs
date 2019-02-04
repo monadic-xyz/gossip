@@ -1,3 +1,5 @@
+{-# LANGUAGE CPP #-}
+
 -- |
 -- Copyright   : 2018 Monadic GmbH
 -- License     : BSD3
@@ -17,7 +19,9 @@ import           Control.Applicative (liftA2)
 import           Control.Monad.Fail (fail)
 import           Data.Hashable (Hashable(..), hashUsing)
 import           Data.Word (Word8)
+#if !MIN_VERSION_network(3,0,0)
 import           GHC.Stack (HasCallStack)
+#endif
 import           Network.Socket
 import           Network.Socket.Serialise (decodeSockAddr, encodeSockAddr)
 import           Prelude hiding (fail)
@@ -59,8 +63,10 @@ instance Hashable n => Hashable (Peer n) where
         hashAddr s (SockAddrUnix path) =
             s `hashWithSalt` (2 :: Word8) `hashWithSalt` path
 
+#if !MIN_VERSION_network(3,0,0)
         -- hashAddr s (SockAddrCan x) = canNotSupported
         hashAddr _ _ = canNotSupported
+#endif
 
         hashPortNum = hashUsing fromEnum
 
@@ -77,5 +83,7 @@ knownPeer nid host port = Peer nid <$> resolve
 
 --------------------------------------------------------------------------------
 
+#if !MIN_VERSION_network(3,0,0)
 canNotSupported :: HasCallStack => a
 canNotSupported = error "CAN addresses not supported"
+#endif

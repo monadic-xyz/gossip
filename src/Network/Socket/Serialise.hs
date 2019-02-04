@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 module Network.Socket.Serialise
     ( encodeSockAddr
     , decodeSockAddr
@@ -8,7 +9,9 @@ import           Codec.Serialise (decode, encode)
 import           Codec.Serialise.Decoding (Decoder, decodeListLen, decodeWord)
 import           Codec.Serialise.Encoding (Encoding, encodeListLen, encodeWord)
 import           Control.Applicative (liftA2)
+#if !MIN_VERSION_network(3,0,0)
 import           GHC.Stack (HasCallStack)
+#endif
 import           Network.Socket (SockAddr(..))
 import qualified Network.Socket as Sock
 
@@ -34,8 +37,10 @@ encodeSockAddr = \case
         <> encodeWord 2
         <> encode path
 
+#if !MIN_VERSION_network(3,0,0)
     -- SockAddrCan{} ->
     _ -> canNotSupported
+#endif
   where
     encodePort  = encode . fromEnum
     encodeHost  = encode . Sock.hostAddressToTuple
@@ -52,7 +57,7 @@ decodeSockAddr = do
               <*> decodeHost6
               <*> decode
         (2, 2) -> SockAddrUnix <$> decode
-        _ -> fail canNotSupported
+        _ -> fail "Network.Socket.Serialise: Invalid wire tagging"
   where
     decodePort  = toEnum <$> decode
     decodeHost  = Sock.tupleToHostAddress <$> decode
@@ -60,6 +65,7 @@ decodeSockAddr = do
 
 --------------------------------------------------------------------------------
 
+#if !MIN_VERSION_network(3,0,0)
 canNotSupported :: HasCallStack => a
 canNotSupported = error "CAN addresses not supported"
-
+#endif
