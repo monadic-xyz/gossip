@@ -1,3 +1,5 @@
+[![Build Status](https://travis-ci.org/oscoin/gossip.svg?branch=master)](https://travis-ci.org/oscoin/gossip)
+
 # Gossip
 
 Experimental Gossip Protocol(s).

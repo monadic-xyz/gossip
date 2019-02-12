@@ -41,7 +41,9 @@ import           Data.Maybe (isJust)
 import           Data.Text (Text)
 import           Data.Void
 import qualified Focus
+#if !MIN_VERSION_network(3,0,0)
 import           GHC.Stack (HasCallStack)
+#endif
 import           Network.Socket
                  ( AddrInfo(..)
                  , AddrInfoFlag(..)
@@ -155,7 +157,9 @@ listen eval host port = do
                             (Sock.addrProtocol addr)
         Sock.setSocketOption sock Sock.ReuseAddr 1
         Sock.bind sock (Sock.addrAddress addr)
-#if MIN_VERSION_network(2,7,0)
+#if MIN_VERSION_network(3,0,0)
+        Sock.setCloseOnExecIfNeeded =<< Sock.fdSocket sock
+#elif MIN_VERSION_network(2,7,0)
         Sock.setCloseOnExecIfNeeded $ Sock.fdSocket sock
 #endif
         Sock.listen sock 10
@@ -280,12 +284,16 @@ family :: SockAddr -> Sock.Family
 family Sock.SockAddrInet{}  = Sock.AF_INET
 family Sock.SockAddrInet6{} = Sock.AF_INET6
 family Sock.SockAddrUnix{}  = Sock.AF_UNIX
+#if !MIN_VERSION_network(3,0,0)
 --family Sock.SockAddrCan{}   = Sock.AF_CAN
 family _                    = canNotSupported
+#endif
 
 withSocket :: SockAddr -> (Socket -> IO a) -> IO a
 withSocket addr =
     bracket (Sock.socket (family addr) Stream Sock.defaultProtocol) Sock.close
 
+#if !MIN_VERSION_network(3,0,0)
 canNotSupported :: HasCallStack => a
 canNotSupported = error "CAN addresses not supported"
+#endif
