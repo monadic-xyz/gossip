@@ -16,38 +16,35 @@ where
 import qualified Network.Gossip.HyParView as H
 import qualified Network.Gossip.HyParView.Periodic as HP
 import           Network.Gossip.IO.Peer
+import           Network.Gossip.IO.Protocol (ProtocolMessage(..))
 import qualified Network.Gossip.IO.Socket as S
+import           Network.Gossip.IO.Trace
 import           Network.Gossip.IO.Wire
 import qualified Network.Gossip.Plumtree as P
 import qualified Network.Gossip.Plumtree.Scheduler as PS
 
-import           Codec.Serialise (Serialise)
 import           Control.Concurrent.Async (async, uninterruptibleCancel)
-import           Control.Exception.Safe (bracket, onException, tryAny)
-import           Control.Monad (when)
+import           Control.Exception.Safe
+                 ( bracket
+                 , onException
+                 , tryAny
+                 , withException
+                 )
 import           Data.Bifunctor (second)
 import           Data.ByteString (ByteString)
 import           Data.Foldable (toList)
 import           Data.Hashable (Hashable)
-import           GHC.Generics (Generic)
-import           Network.Socket (HostName, PortNumber)
 import           Prelude hiding (round)
 import qualified System.Random.SplitMix as SplitMix
-
-data ProtocolMessage n =
-      ProtocolPlumtree  (P.RPC n)
-    | ProtocolHyParView (H.RPC n)
-    deriving (Eq, Generic)
-
-instance (Eq n, Hashable n, Serialise n) => Serialise (ProtocolMessage n)
 
 data Env n = Env
     { envPlumtree      :: P.Env  (Peer n)
     , envHyParView     :: H.Env  (Peer n)
     , envScheduler     :: PS.Env (Peer n)
-    , envIO            :: S.Env  n        (ProtocolMessage (Peer n))
+    , envIO            :: S.Env n (ProtocolMessage (Peer n))
     , envApplyMessage  :: P.MessageId -> ByteString -> IO P.ApplyResult
     , envLookupMessage :: P.MessageId -> IO (Maybe ByteString)
+    , envTrace         :: Traceable n -> IO ()
     }
 
 withGossip
@@ -66,10 +63,8 @@ withGossip
     -- ^ Apply message
     -> (P.MessageId -> IO (Maybe ByteString))
     -- ^ Lookup message
-    -> HostName
-    -- ^ 'HostName' to bind to
-    -> PortNumber
-    -- ^ 'PortNumber' to listen on
+    -> (Traceable n -> IO ())
+    -- ^ Tracing
     -> t (Peer n)
     -- ^ Intial contacts
     -> (Env n -> IO a)
@@ -81,8 +76,7 @@ withGossip self
            handshake
            envApplyMessage
            envLookupMessage
-           host
-           port
+           envTrace
            contacts
            k
     = do
@@ -95,19 +89,20 @@ withGossip self
     PS.withScheduler envScheduler (sendIHaves env) $
         HP.withPeriodic hpcfg (runHyParView env)   . const $
         bracket (listen env) uninterruptibleCancel . const $ do
+            envTrace $ TraceBootstrap (Bootstrapping self contacts)
             bootstrap env
+            envTrace $ TraceBootstrap (Bootstrapped self)
             k env
   where
     sendIHaves env to round xs =
-        runNetwork env $
-            S.send to . WirePayload . ProtocolPlumtree $ P.RPC
-                { P.rpcSender  = self
-                , P.rpcRound   = Just round
-                , P.rpcPayload = P.IHave xs
-                }
+        protoSend env False to . ProtocolPlumtree $ P.RPC
+            { P.rpcSender  = self
+            , P.rpcRound   = Just round
+            , P.rpcPayload = P.IHave xs
+            }
 
     listen env = async $
-        runNetwork env (S.listen (evalNetwork env) host port)
+        runNetwork env $ S.listen (evalNetwork env) (peerAddr self)
 
     bootstrap env = do
         peers <-
@@ -134,7 +129,7 @@ evalPlumtree env@Env { envApplyMessage, envLookupMessage } = go
             envLookupMessage mid >>= k >>= go
 
         P.SendEager to msg k -> do
-            runNetwork env (S.send to (mkWire msg))
+            protoSend env False to (ProtocolPlumtree msg)
                 `onException` runHyParView env (H.eject to)
             k >>= go
 
@@ -152,32 +147,38 @@ evalPlumtree env@Env { envApplyMessage, envLookupMessage } = go
 
         P.Done a -> pure a
 
-    mkWire = WirePayload . ProtocolPlumtree
-
 evalHyParView
     :: (Eq n, Hashable n)
     => Env n
     -> H.HyParViewC (Peer n) a
     -> IO a
-evalHyParView env = go
+evalHyParView env@Env { envTrace = trace } = go
   where
     go = \case
         H.ConnectionOpen to k -> do
+            trace $ TraceConnection (Connecting to)
+
             conn <-
                     second (const $ mkConn to)
                 <$> tryAny (runNetwork env (S.connect (evalNetwork env) to))
+
+            trace . TraceConnection $
+                either (ConnectFailed to) (const $ Connected to) conn
+
             k conn >>= go
 
         H.SendAdHoc rpc k -> do
-            -- swallow exceptions?
-            runNetwork env $ S.send (H.rpcRecipient rpc) (mkWire rpc)
+            -- FIXME(kim): swallow exceptions?
+            protoSend env True (H.rpcRecipient rpc) (ProtocolHyParView rpc)
             k >>= go
 
         H.NeighborUp n k -> do
+            trace $ TraceMembership (Promoted n)
             runPlumtree env $ P.neighborUp n
             k >>= go
 
         H.NeighborDown n k -> do
+            trace $ TraceMembership (Demoted n)
             runPlumtree env $ P.neighborDown n
             k >>= go
 
@@ -185,37 +186,66 @@ evalHyParView env = go
 
     mkConn to = H.Connection
         { connSend  = \rpc ->
-            runNetwork env $ S.send (H.rpcRecipient rpc) (mkWire rpc)
-        , connClose = runNetwork env $ S.disconnect to
+            protoSend env False (H.rpcRecipient rpc) (ProtocolHyParView rpc)
+        , connClose = do
+            runNetwork env $ S.disconnect to
+            trace $ TraceConnection (Disconnected to)
         }
-
-    mkWire = WirePayload . ProtocolHyParView
 
 evalNetwork
     :: (Eq n, Hashable n)
     => Env n
     -> S.NetworkC n (ProtocolMessage (Peer n)) a
     -> IO a
-evalNetwork env = go
+evalNetwork env@Env { envTrace = trace } = go
   where
     go = \case
-        S.PayloadReceived from (ProtocolHyParView p) k -> do
-            when (H.isAuthorised from p) $
-                runHyParView env $ H.receive p
+        S.PayloadReceived from rpc k -> do
+            trace $ TraceWire (ProtocolRecv from rpc)
+            if | isAuthorised from rpc ->
+                case rpc of
+                    ProtocolHyParView p -> runHyParView env $ H.receive p
+                    ProtocolPlumtree  p -> runPlumtree  env $ P.receive p
+               | otherwise             ->
+                case rpc of
+                    ProtocolPlumtree{} -> runHyParView env $ H.eject from
+                    _                  -> pure ()
             k >>= go
 
-        S.PayloadReceived from (ProtocolPlumtree p) k -> do
-            if P.isAuthorised from p then
-                runPlumtree env $ P.receive p
-            else
-                runHyParView env $ H.eject from
-            k >>= go
-
-        S.ConnectionLost to k -> do
+        S.ConnectionLost to e k -> do
+            trace $ TraceConnection (ConnectionLost to e)
             runHyParView env $ H.eject to
             k >>= go
 
+        S.ConnectionAccepted from k -> do
+            trace $ TraceConnection (ConnectionAccepted from)
+            k >>= go
+
         S.Done a -> pure a
+
+    -- XXX(kim): We cannot use the 'Eq' instance here, since a node's view of
+    -- its port and the @accept@ed one differ. Not sure though if we should
+    -- consider the address.
+    isAuthorised from (ProtocolHyParView rpc) = case H.rpcPayload rpc of
+        H.Shuffle{}     -> True
+        H.ForwardJoin{} -> True
+        _               -> peerNodeId (H.rpcSender rpc) == peerNodeId from
+    isAuthorised from (ProtocolPlumtree rpc) =
+        peerNodeId (P.rpcSender rpc) == peerNodeId from
+
+--------------------------------------------------------------------------------
+
+protoSend
+    :: (Eq n, Hashable n)
+    => Env n
+    -> Bool
+    -> Peer n
+    -> ProtocolMessage (Peer n)
+    -> IO ()
+protoSend env@Env { envTrace = trace } allowAdHoc to proto = do
+    trace $ TraceWire (ProtocolSend to proto)
+    runNetwork env (S.send allowAdHoc to (WirePayload proto))
+        `withException` (trace . TraceWire . ProtocolError to)
 
 --------------------------------------------------------------------------------
 

@@ -42,6 +42,7 @@ common common
         DeriveGeneric
         LambdaCase
         MultiParamTypeClasses
+        MultiWayIf
         NamedFieldPuns
         RecordWildCards
         StrictData
@@ -66,8 +67,10 @@ library
         Network.Gossip.HyParView
         Network.Gossip.HyParView.Periodic
         Network.Gossip.IO.Peer
+        Network.Gossip.IO.Protocol
         Network.Gossip.IO.Run
         Network.Gossip.IO.Socket
+        Network.Gossip.IO.Trace
         Network.Gossip.IO.Wire
         Network.Gossip.Plumtree
         Network.Gossip.Plumtree.Scheduler

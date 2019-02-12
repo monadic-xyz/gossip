@@ -35,7 +35,6 @@ module Network.Gossip.Plumtree
     , resetPeers
 
     , broadcast
-    , isAuthorised
     , receive
     , neighborUp
     , neighborDown
@@ -208,9 +207,6 @@ resetPeers peers = do
 -- 'Stale' (or 'ApplyError').
 broadcast :: MessageId -> ByteString -> Plumtree n ()
 broadcast mid msg = push 0 $ Map.singleton mid msg
-
-isAuthorised :: Eq n => n -> RPC n -> Bool
-isAuthorised sender rpc = sender == rpcSender rpc
 
 -- | Receive and handle some 'RPC' from the network.
 receive :: (Eq n, Hashable n) => RPC n -> Plumtree n ()

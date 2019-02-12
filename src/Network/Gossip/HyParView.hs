@@ -42,7 +42,6 @@ module Network.Gossip.HyParView
     , activeView
     , passiveView
 
-    , isAuthorised
     , receive
     , eject
     , joinAny
@@ -247,13 +246,6 @@ activeView = asks envActive >>= liftIO . fmap keysSet . readTVarIO
 passiveView :: HyParView n (HashSet n)
 passiveView = asks envPassive >>= liftIO . readTVarIO
 
-isAuthorised :: Eq n => n -> RPC n -> Bool
-isAuthorised sender rpc =
-    case rpcPayload rpc of
-        Shuffle{}     -> True
-        ForwardJoin{} -> True
-        _             -> rpcSender rpc == sender
-
 -- | Env an incoming 'RPC' and return a (possibly empty) list of outgoing
 -- 'RPC's.
 --
@@ -289,8 +281,8 @@ receive RPC { rpcSender, rpcPayload } = case rpcPayload of
     Disconnect -> do
         removeFromActive rpcSender >>= traverse_ (liftIO . connClose)
         addToPassive rpcSender
-        -- Crucial omission in the paper: if the network starts to 'Disconnect'
-        -- us, we must actively seek to remain connected.
+        -- Panic: if the network starts to 'Disconnect' us, actively seek to
+        -- remain connected.
         nactv <- numActive
         unless (nactv > 1) $ do
             -- Try to promote a random passive node.
@@ -322,7 +314,8 @@ receive RPC { rpcSender, rpcPayload } = case rpcPayload of
         -- active or passive) to increase our options.
         eject rpcSender
 
-    Shuffle origin nodes ttl -> do
+    Shuffle origin nodes ttl | Set.null nodes -> pure ()
+                             | otherwise      -> do
         nactv <- numActive
         let ttl' = decr ttl
         if not (isExpired ttl') && nactv > 1 then
@@ -379,8 +372,8 @@ eject n = do
     removeFromActive n >>= traverse_ (liftIO . connClose)
     promoteRandom
     nactv <- numActive
-    -- Crucial: initiate a 'shuffle' if we seem to run out of peers.
-    when (nactv <= 2) shuffle
+    -- Panic: initiate a 'shuffle' if we seem to run out of peers.
+    when (nactv <= 1) shuffle
 
 -- | Join the overlay by attempting to connect to the supplied contact nodes.
 --
@@ -425,10 +418,13 @@ shuffle = do
     s   <- asks envSelf
     ran <- randomActiveNode
     for_ ran $ \(r, rconn) -> do
-        as  <- keysSet
-           <$> randomActiveNodesNot (Set.singleton r) (fromIntegral ka)
-        ps  <- randomPassiveNodes (fromIntegral kp)
-        sendTo rconn r $ Shuffle s (as <> ps) (fromIntegral arwl)
+        nodes <-
+            liftA2 (<>)
+                   (keysSet <$>
+                       randomActiveNodesNot (Set.singleton r) (fromIntegral ka))
+                   (randomPassiveNodes (fromIntegral kp))
+        unless (Set.null nodes) $
+            sendTo rconn r $ Shuffle s nodes (fromIntegral arwl)
 
 -- Internal --------------------------------------------------------------------
 
@@ -560,7 +556,7 @@ addToActive n = ask >>= go
   where
     go hdl@Env { envSelf, envPRNG, envActive, envPassive }
       | envSelf == n = pure . Left $ toException SelfConnection
-      | otherwise  = do
+      | otherwise    = do
         conn <- connectionOpen n
         for conn $ \c -> do
             removed <- liftIO $ do
@@ -620,16 +616,16 @@ removeFromPassive n = ask >>= liftIO . atomically . flip removeFromPassive' n
 promoteRandom :: (Eq n, Hashable n) => HyParView n ()
 promoteRandom = randomPassiveNode >>= maybe (pure ()) promote
   where
-    promote n' = do
-        x <- addToActive n'
+    promote n = do
+        x <- addToActive n
         case x of
             Left  _ -> do
                 -- TODO(kim): logging?
-                removeFromPassive n'
+                removeFromPassive n
                 promoteRandom
             Right c -> do
                 prio <- neighborPriority
-                sendTo c n' $ Neighbor prio
+                sendTo c n $ Neighbor prio
 
 --------------------------------------------------------------------------------
 

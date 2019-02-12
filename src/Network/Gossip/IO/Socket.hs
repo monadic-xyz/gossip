@@ -44,19 +44,15 @@ import qualified Focus
 #if !MIN_VERSION_network(3,0,0)
 import           GHC.Stack (HasCallStack)
 #endif
-import           Network.Socket
-                 ( AddrInfo(..)
-                 , AddrInfoFlag(..)
-                 , HostName
-                 , PortNumber
-                 , SockAddr
-                 , Socket
-                 , SocketType(Stream)
-                 )
+import           Network.Socket (SockAddr, Socket, SocketType(Stream))
 import qualified Network.Socket as Sock
 import qualified STMContainers.Map as STMMap
 
-newtype Error = GoawayReceived (Maybe Text) deriving Show
+data Error
+    = GoawayReceived (Maybe Text)
+    | NoSuchPeer     SockAddr     -- FIXME(kim): should be 'Peer n', but that imposes 'Show n, Typeable n'
+    deriving Show
+
 instance Exception Error
 
 data Connection n p = Connection
@@ -88,20 +84,26 @@ new envHandshake = do
 
 -- Continuations ---------------------------------------------------------------
 
-data NetworkC n p a =
-      PayloadReceived (Peer n) p (IO (NetworkC n p a))
-    | ConnectionLost  (Peer n)   (IO (NetworkC n p a))
-    | Done            a
+data NetworkC n p a
+    = PayloadReceived    (Peer n) p             (IO (NetworkC n p a))
+    | ConnectionLost     (Peer n) SomeException (IO (NetworkC n p a))
+    | ConnectionAccepted SockAddr               (IO (NetworkC n p a))
+    | Done a
 
 payloadReceived :: Peer n -> p -> Network n p ()
 payloadReceived from payload =
     Network $ ReaderT $ \_ -> ContT $ \k ->
         pure $ PayloadReceived from payload (k ())
 
-connectionLost :: Peer n -> Network n p ()
-connectionLost to =
+connectionLost :: Peer n -> SomeException -> Network n p ()
+connectionLost to e =
     Network $ ReaderT $ \_ -> ContT $ \k ->
-        pure $ ConnectionLost to (k ())
+        pure $ ConnectionLost to e (k ())
+
+connectionAccepted :: SockAddr -> Network n p ()
+connectionAccepted from =
+    Network $ ReaderT $ \_ -> ContT $ \k ->
+        pure $ ConnectionAccepted from (k ())
 
 -- Monad -----------------------------------------------------------------------
 
@@ -121,10 +123,14 @@ instance Monad (Network n p) where
 
 instance MonadIO (Network n p) where
     liftIO io = Network $ liftIO io
+    {-# INLINE liftIO #-}
 
 instance MonadReader (Env n p) (Network n p) where
     ask       = Network $ ReaderT pure
     local f m = Network $ local f (fromNetwork m)
+
+    {-# INLINE ask   #-}
+    {-# INLINE local #-}
 
 runNetwork :: Env n p -> Network n p a -> IO (NetworkC n p a)
 runNetwork r (Network ma) = runContT (runReaderT ma r) (pure . Done)
@@ -134,29 +140,16 @@ runNetwork r (Network ma) = runContT (runReaderT ma r) (pure . Done)
 listen
     :: (Eq n, Hashable n)
     => (NetworkC n p () -> IO ())
-    -> HostName
-    -> PortNumber
+    -> SockAddr
     -> Network n p Void
-listen eval host port = do
+listen eval addr = do
     hdl  <- ask
-    liftIO $ do
-        addr <- resolve host port
-        bracket (open addr) Sock.close (accept hdl)
+    liftIO $ bracket open Sock.close (accept hdl)
   where
-    resolve h p = do
-        let hints = Sock.defaultHints
-                        { addrFlags      = [AI_PASSIVE, AI_NUMERICSERV]
-                        , addrSocketType = Stream
-                        }
-        addr:_ <- Sock.getAddrInfo (Just hints) (Just h) (Just (show p))
-        pure addr
-
-    open addr = do
-        sock <- Sock.socket (Sock.addrFamily addr)
-                            (Sock.addrSocketType addr)
-                            (Sock.addrProtocol addr)
+    open = do
+        sock <- Sock.socket (addrFamily addr) Stream Sock.defaultProtocol
         Sock.setSocketOption sock Sock.ReuseAddr 1
-        Sock.bind sock (Sock.addrAddress addr)
+        Sock.bind sock addr
 #if MIN_VERSION_network(3,0,0)
         Sock.setCloseOnExecIfNeeded =<< Sock.fdSocket sock
 #elif MIN_VERSION_network(2,7,0)
@@ -166,23 +159,30 @@ listen eval host port = do
         pure $! sock
 
     accept hdl@Env { envHandshake } sock = forever $ do
-        (sock', addr) <- Sock.accept sock
+        (sock', addr') <- Sock.accept sock
         forkUltimately_ (Sock.close sock') $ do
-            conn <- envHandshake Acceptor sock' addr Nothing
+            runNetwork hdl (connectionAccepted addr') >>= eval
+            conn <- envHandshake Acceptor sock' addr' Nothing
             recvAll hdl eval conn
 
-send :: (Eq n, Hashable n) => Peer n -> WireMessage p -> Network n p ()
-send Peer { peerNodeId, peerAddr } msg = do
+    addrFamily Sock.SockAddrInet{}  = Sock.AF_INET
+    addrFamily Sock.SockAddrInet6{} = Sock.AF_INET6
+    addrFamily Sock.SockAddrUnix{}  = Sock.AF_UNIX
+
+send :: (Eq n, Hashable n) => Bool -> Peer n -> WireMessage p -> Network n p ()
+send allowAdHoc Peer { peerNodeId, peerAddr } msg = do
     conns <- asks envConns
     conn  <- liftIO . atomically $ connsGet conns peerNodeId
     case conn of
         Just  c -> liftIO $ connSend c msg
-        Nothing -> do
+        Nothing | allowAdHoc -> do
             hands <- asks envHandshake
             liftIO . withSocket peerAddr $ \sock -> do
                 Sock.connect sock peerAddr
                 c <- hands Connector sock peerAddr (Just peerNodeId)
                 connSend c msg `finally` connClose c
+
+                | otherwise -> liftIO . throwIO $ NoSuchPeer peerAddr
 
 connect
     :: (Eq n, Hashable n)
@@ -191,9 +191,10 @@ connect
     -> Network n p ()
 connect eval Peer { peerNodeId, peerAddr } = do
     hdl@Env { envConns, envHandshake } <- ask
-    known <- liftIO . atomically $ connsHas envConns peerNodeId
-    unless known $
-        liftIO . withSocket peerAddr $ \sock -> do
+    liftIO $ do
+        known <- atomically $ connsHas envConns peerNodeId
+        unless known $ do
+            sock <- Sock.socket (family peerAddr) Stream Sock.defaultProtocol
             Sock.connect sock peerAddr
             conn <- envHandshake Connector sock peerAddr (Just peerNodeId)
             forkUltimately_ (connClose conn) $ recvAll hdl eval conn
@@ -216,9 +217,9 @@ recvAll
 recvAll hdl@Env { envConns } eval conn = do
     ok <- atomically $ connsAdd envConns conn
     if ok then
-        onException (runConduit recv) $ do
+        withException (runConduit recv) $ \e -> do
             atomically $ connsDel_ envConns conn
-            run $ connectionLost (connPeer conn)
+            run $ connectionLost (connPeer conn) e
     else
         connSend conn (WireGoaway (Just "Duplicate Node Id"))
             `finally` connClose conn
