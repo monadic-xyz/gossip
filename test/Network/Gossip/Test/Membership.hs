@@ -1,4 +1,6 @@
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE TypeFamilies               #-}
 
 module Network.Gossip.Test.Membership (tests) where
 
@@ -8,7 +10,7 @@ import           Network.Gossip.Test.Gen
                  ( Contacts
                  , InfiniteListOf(..)
                  , LinkState(..)
-                 , NodeId
+                 , MockNodeId
                  , SplitMixSeed
                  , renderInf
                  )
@@ -19,27 +21,44 @@ import qualified Algebra.Graph.AdjacencyMap as Alga
 import           Control.Concurrent (threadDelay)
 import           Control.Monad.Trans.Class (lift)
 import           Data.Bifunctor (second)
+import           Data.Coerce (coerce)
 import           Data.Foldable (for_)
+import           Data.Hashable (Hashable)
 import qualified Data.HashSet as Set
 import           Data.IORef (IORef, atomicModifyIORef', newIORef)
 import           Data.List (uncons)
 import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import           Data.Traversable (for)
+import           Lens.Micro (lens)
+import           Lens.Micro.Extras (view)
 import           System.Random (randomR, split)
 import           System.Random.SplitMix (SMGen, seedSMGen')
 
 import           Hedgehog hiding (eval)
 import qualified Hedgehog.Gen as Gen
 
+newtype MockPeer = MockPeer MockNodeId
+    deriving (Eq, Hashable)
+
+instance HasPeerNodeId MockPeer where
+    type NodeId MockPeer = MockNodeId
+    peerNodeId = lens coerce (const coerce)
+    {-# INLINE peerNodeId #-}
+
+instance HasPeerAddr MockPeer where
+    type Addr MockPeer = MockNodeId
+    peerAddr = lens coerce (const coerce)
+    {-# INLINE peerAddr #-}
+
 data Network = Network
-    { netNodes     :: Map NodeId Node
+    { netNodes     :: Map MockNodeId Node
     , netTaskQueue :: TaskQueue
     , netPRNG      :: IORef SMGen
     , netLinkState :: IORef (InfiniteListOf LinkState)
     }
 
-newtype Node = Node { nodeEnv :: Env NodeId }
+newtype Node = Node { nodeEnv :: Env MockPeer }
 
 tests :: IO Bool
 tests = checkParallel $ Group "Gossip.Membership"
@@ -115,13 +134,13 @@ activeDisconnected seed boot links = do
 
 --------------------------------------------------------------------------------
 
-activeNetwork :: [(NodeId, Peers NodeId)] -> [(NodeId, [NodeId])]
-activeNetwork = map (second (Set.toList . active))
+activeNetwork :: [(MockNodeId, Peers MockPeer)] -> [(MockNodeId, [MockNodeId])]
+activeNetwork = map (second (map (view peerNodeId) . Set.toList . active))
 
-passiveNetwork :: [(NodeId, Peers NodeId)] -> [(NodeId, [NodeId])]
-passiveNetwork = map (second (Set.toList . passive))
+passiveNetwork :: [(MockNodeId, Peers MockPeer)] -> [(MockNodeId, [MockNodeId])]
+passiveNetwork = map (second (map (view peerNodeId) . Set.toList . passive))
 
-isConnected :: [(NodeId, [NodeId])] -> Bool
+isConnected :: [(MockNodeId, [MockNodeId])] -> Bool
 isConnected adj =
     case Alga.dfsForest (Alga.stars adj) of
         [_] -> True
@@ -133,7 +152,7 @@ runNetwork
     :: SMGen
     -> Contacts
     -> InfiniteListOf LinkState
-    -> IO [(NodeId, Peers NodeId)]
+    -> IO [(MockNodeId, Peers MockPeer)]
 runNetwork rng boot links = do
     nodes <- Map.fromList <$> initNodes rng init'
     rng'  <- newIORef rng
@@ -147,32 +166,33 @@ runNetwork rng boot links = do
             }
 
     for_ (zip (Map.elems nodes) contacts) $ \(node, contacts') ->
-        runMembership network node $ joinAny contacts'
+        runMembership network node $
+            joinAny (map (\nid -> (Just nid, nid)) contacts')
 
     fmap Map.toList . for nodes $ \node ->
         runMembership network node getPeers'
   where
     (init', contacts) = unzip boot
 
-initNodes :: SMGen -> [NodeId] -> IO [(NodeId, Node)]
+initNodes :: SMGen -> [MockNodeId] -> IO [(MockNodeId, Node)]
 initNodes rng ns =
     for ns $ \nid -> do
-        env <- new nid defaultConfig rng
+        env <- new (MockPeer nid) defaultConfig rng
         pure (nid, Node env)
 
 runMembership
     :: Network
     -> Node
-    -> HyParView NodeId a
+    -> HyParView MockPeer a
     -> IO a
 runMembership network node ma = runHyParView (nodeEnv node) ma >>= eval
   where
     eval = \case
-        ConnectionOpen to k ->
-            k (Right (mkConn to)) >>= eval
+        ConnectionOpen addr _ k ->
+            k (Right (mkConn (MockPeer addr))) >>= eval
 
         SendAdHoc rpc k -> do
-            onNode network (rpcRecipient rpc) $ receive rpc
+            onNode network (view peerAddr $ rpcRecipient rpc) $ receive rpc
             k >>= eval
 
         NeighborUp   _ k -> k >>= eval
@@ -181,11 +201,12 @@ runMembership network node ma = runHyParView (nodeEnv node) ma >>= eval
         Done a -> pure a
 
     mkConn to = Connection
-        { connSend  = onNode network to . receive
+        { connPeer  = to
+        , connSend  = onNode network (view peerAddr to) . receive
         , connClose = pure ()
         }
 
-onNode :: Network -> NodeId -> HyParView NodeId () -> IO ()
+onNode :: Network -> MockNodeId -> HyParView MockPeer () -> IO ()
 onNode network n ma =
     for_ (Map.lookup n (netNodes network)) $ \node ->
         let

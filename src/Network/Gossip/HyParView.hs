@@ -1,4 +1,6 @@
-{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE RankNTypes      #-}
+{-# LANGUAGE TypeFamilies    #-}
 
 -- |
 -- Copyright   : 2018 Monadic GmbH
@@ -17,8 +19,11 @@
 -- advisable to also factor in a cryptographic node id. How to do that is beyond
 -- the scope of this module.
 module Network.Gossip.HyParView
-    ( Peers (active, passive)
+    ( HasPeerNodeId (..)
+    , HasPeerAddr (..)
+    , HasPeer
 
+    , Peers (active, passive)
     , getPeers
 
     , Env
@@ -77,11 +82,25 @@ import           Data.Maybe (listToMaybe)
 import           Data.Traversable (for)
 import           Data.Word (Word8)
 import           GHC.Generics (Generic)
+import           Lens.Micro (Lens')
+import           Lens.Micro.Extras (view)
 import           System.Random (randomR, split)
 import           System.Random.SplitMix (SMGen)
 
+
+class HasPeerNodeId a where
+    type NodeId a
+    peerNodeId :: Lens' a (NodeId a)
+
+class HasPeerAddr a where
+    type Addr a
+    peerAddr :: Lens' a (Addr a)
+
+type HasPeer a = (HasPeerNodeId a, HasPeerAddr a)
+
 data Connection n = Connection
-    { connSend  :: RPC n -> IO ()
+    { connPeer  :: n
+    , connSend  :: RPC n -> IO ()
     , connClose :: IO ()
     }
 
@@ -171,16 +190,21 @@ instance Serialise Priority
 -- Continuations ---------------------------------------------------------------
 
 data HyParViewC n a =
-      ConnectionOpen n       (Either SomeException (Connection n) -> IO (HyParViewC n a))
+      ConnectionOpen (Addr n)
+                     (Maybe (NodeId n))
+                     (Either SomeException (Connection n) -> IO (HyParViewC n a))
     | SendAdHoc      (RPC n) (IO (HyParViewC n a))
     | NeighborUp     n       (IO (HyParViewC n a))
     | NeighborDown   n       (IO (HyParViewC n a))
     | Done           a
 
-connectionOpen :: n -> HyParView n (Either SomeException (Connection n))
-connectionOpen to =
+connectionOpen
+    :: Addr n
+    -> Maybe (NodeId n)
+    -> HyParView n (Either SomeException (Connection n))
+connectionOpen addr nid =
     HyParView $ ReaderT $ \_ -> ContT $ \k ->
-        pure $ ConnectionOpen to k
+        pure $ ConnectionOpen addr nid k
 
 sendAdHoc :: RPC n -> HyParView n ()
 sendAdHoc rpc =
@@ -250,7 +274,7 @@ passiveView = asks envPassive >>= liftIO . readTVarIO
 -- 'RPC's.
 --
 -- Rethrows any exceptions raised by attempting to establish new connections.
-receive :: (Eq n, Hashable n) => RPC n -> HyParView n ()
+receive :: (Eq n, Hashable n, HasPeer n) => RPC n -> HyParView n ()
 receive RPC { rpcSender, rpcPayload } = case rpcPayload of
     Join -> do
         arwl <- fromIntegral . cfgARWL <$> asks envConfig
@@ -367,7 +391,7 @@ receive RPC { rpcSender, rpcPayload } = case rpcPayload of
 --   close the connection on its end after replying with 'NeighborReject', such
 --   that the node gets 'eject'ed on the requestor's side on the next attempt to
 --   use the connection.
-eject :: (Eq n, Hashable n) => n -> HyParView n ()
+eject :: (Eq n, Hashable n, HasPeer n) => n -> HyParView n ()
 eject n = do
     removeFromActive n >>= traverse_ (liftIO . connClose)
     promoteRandom
@@ -388,27 +412,37 @@ eject n = do
 -- This condition is, however, not checked nor enforced. Hence, the returned
 -- list of 'RPC's may also contain 'Disconnect' messages due to evicted active
 -- peers.
-joinAny :: (Eq n, Hashable n) => [n] -> HyParView n ()
+joinAny
+    :: (Eq n, Hashable n, HasPeer n)
+    => [(Maybe (NodeId n), Addr n)]
+    -> HyParView n ()
 joinAny ns = do
     Config { cfgMaxActive, cfgMaxPassive } <- asks envConfig
     traverse_ go $ take (fromIntegral $ cfgMaxActive + cfgMaxPassive) ns
   where
-    go n = addToActive n >>= traverse_ (\conn -> sendTo conn n Join)
+    go (n, addr) = do
+        conn <- connectionOpen addr n
+        for_ conn $ \c -> do
+            addConnectedToActive c
+            sendTo c (connPeer c) Join
 
 -- | Like 'joinAny', but stop on the first successfully established connection.
-joinFirst :: (Eq n, Hashable n) => [n] -> HyParView n ()
-joinFirst []     = pure ()
-joinFirst (n:ns) = do
-    x <- addToActive n
-    case x of
-        Right c -> sendTo c n Join
+joinFirst
+    :: (Eq n, Hashable n, HasPeer n)
+    => [(Maybe (NodeId n), Addr n)]
+    -> HyParView n ()
+joinFirst []          = pure ()
+joinFirst ((n, a):ns) = do
+    conn <- connectionOpen a n
+    case conn of
+        Right c -> addConnectedToActive c *> sendTo c (connPeer c) Join
         Left  _ -> joinFirst ns
 
 -- | Initiate a 'Shuffle'.
 --
 -- This is supposed to be called periodically in order to exchange peers with
 -- the known part of the network.
-shuffle :: (Eq n, Hashable n) => HyParView n ()
+shuffle :: (Eq n, Hashable n, HasPeer n) => HyParView n ()
 shuffle = do
     Config { cfgARWL           = arwl
            , cfgShuffleActive  = ka
@@ -432,7 +466,7 @@ shuffle = do
 --
 -- If the active view is empty, 'Nothing' is returned, otherwise 'Just' the
 -- random node.
-randomActiveNode :: (Eq n , Hashable n) => HyParView n (Maybe (n, Connection n))
+randomActiveNode :: (Eq n, Hashable n) => HyParView n (Maybe (n, Connection n))
 randomActiveNode = randomActiveNodeNot mempty
 
 -- | Select a node @n@, but not nodes @ns@, from the active view at random.
@@ -496,10 +530,7 @@ randomPassiveNode = do
         pure . fst $ randomFromSet pasv prng
 
 -- | Select a node @n'@ from the passive view at random, such that @n' /= n@
-randomPassiveNodeNot
-    :: (Eq n, Hashable n)
-    => n
-    -> HyParView n (Maybe n)
+randomPassiveNodeNot :: (Eq n, Hashable n) => n -> HyParView n (Maybe n)
 randomPassiveNodeNot n = do
     Env { envPRNG, envPassive } <- ask
     liftIO $ do
@@ -513,10 +544,7 @@ randomPassiveNodeNot n = do
 -- be:
 --
 -- > min (size passive) (min cfgMaxPassive num)
-randomPassiveNodes
-    :: (Eq n, Hashable n)
-    => Int
-    -> HyParView n (HashSet n)
+randomPassiveNodes :: (Eq n, Hashable n) => Int -> HyParView n (HashSet n)
 randomPassiveNodes num = do
     Env { envConfig, envPRNG, envPassive } <- ask
     prng <- liftIO $ atomicModifyIORef' envPRNG split
@@ -549,28 +577,32 @@ instance Exception SelfConnection
 -- established via 'connectionOpen'. This may fail throwing an arbitrary
 -- exception, in which case the peer is /not/ added to the active view.
 addToActive
-    :: (Eq n, Hashable n)
+    :: (Eq n, Hashable n, HasPeer n)
     => n
     -> HyParView n (Either SomeException (Connection n))
 addToActive n = ask >>= go
   where
-    go hdl@Env { envSelf, envPRNG, envActive, envPassive }
+    go Env { envSelf }
       | envSelf == n = pure . Left $ toException SelfConnection
       | otherwise    = do
-        conn <- connectionOpen n
-        for conn $ \c -> do
-            removed <- liftIO $ do
-                gen <- atomicModifyIORef' envPRNG split
-                atomically $ do
-                    (removed,_) <- evictActive hdl gen
-                    modifyTVar' envActive  $ Map.insert n c
-                    modifyTVar' envPassive $ Set.delete n
-                    pure removed
-            neighborUp n
-            for_ removed $ \(rn, rconn) -> do
-                liftIO $ connClose rconn
-                neighborDown rn
-            pure c
+        conn <- connectionOpen (view peerAddr n) (Just (view peerNodeId n))
+        for_ conn addConnectedToActive
+        pure conn
+
+addConnectedToActive :: (Eq n, Hashable n) => Connection n -> HyParView n ()
+addConnectedToActive c = do
+    env@Env { envPRNG, envActive, envPassive } <- ask
+    removed <- liftIO $ do
+        gen <- atomicModifyIORef' envPRNG split
+        atomically $ do
+            (removed,_) <- evictActive env gen
+            modifyTVar' envActive  $ Map.insert (connPeer c) c
+            modifyTVar' envPassive $ Set.delete (connPeer c)
+            pure removed
+    neighborUp $ connPeer c
+    for_ removed $ \(rn, rconn) -> do
+        liftIO $ connClose rconn
+        neighborDown rn
 
 -- | Add a peer to the passive view, removing a random other node from the
 -- passive view if it is full.
@@ -597,10 +629,7 @@ addAllToPassive ns = do
             modifyTVar' envPassive (`Set.difference` ns')
             void $ foldlM (addToPassive' hdl) gen ns'
 
-removeFromActive
-    :: (Eq n, Hashable n)
-    => n
-    -> HyParView n (Maybe (Connection n))
+removeFromActive :: (Eq n, Hashable n) => n -> HyParView n (Maybe (Connection n))
 removeFromActive n = do
     prev <- ask >>= liftIO . atomically . flip removeFromActive' n
     for_ prev . const $ neighborDown n
@@ -613,7 +642,7 @@ removeFromPassive n = ask >>= liftIO . atomically . flip removeFromPassive' n
 --
 -- This should be called periodically at an interval smaller than the rate of
 -- new nodes joining (which in turn should be rate-limited).
-promoteRandom :: (Eq n, Hashable n) => HyParView n ()
+promoteRandom :: (Eq n, Hashable n, HasPeer n) => HyParView n ()
 promoteRandom = randomPassiveNode >>= maybe (pure ()) promote
   where
     promote n = do
@@ -641,7 +670,12 @@ mkRPC to payload = do
         , rpcPayload   = payload
         }
 
-sendTo :: (Eq n, Hashable n) => Connection n -> n -> Message n -> HyParView n ()
+sendTo
+    :: (Eq n, Hashable n, HasPeer n)
+    => Connection n
+    -> n
+    -> Message n
+    -> HyParView n ()
 sendTo Connection { connSend } to msg = do
     rpc <- mkRPC to msg
     res <- liftIO . tryAny $ connSend rpc

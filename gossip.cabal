@@ -105,8 +105,10 @@ test-suite tests
     build-depends:
         algebraic-graphs == 0.2.*
       , gossip
+      , hashable
       , hedgehog
       , hedgehog-quickcheck
+      , microlens
       , QuickCheck
       , random
 

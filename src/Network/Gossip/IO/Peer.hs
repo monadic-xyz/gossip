@@ -1,4 +1,5 @@
-{-# LANGUAGE CPP #-}
+{-# LANGUAGE CPP          #-}
+{-# LANGUAGE TypeFamilies #-}
 
 -- |
 -- Copyright   : 2018 Monadic GmbH
@@ -6,11 +7,16 @@
 -- Maintainer  : kim@monadic.xyz, team@monadic.xyz
 -- Stability   : experimental
 -- Portability : non-portable (GHC extensions)
+--
 module Network.Gossip.IO.Peer
     ( Peer (..)
+
     , knownPeer
+    , resolve
     )
 where
+
+import qualified Network.Gossip.HyParView as H
 
 import           Codec.Serialise (Serialise(..))
 import qualified Codec.Serialise.Decoding as CBOR
@@ -22,6 +28,7 @@ import           Data.Word (Word8)
 #if !MIN_VERSION_network(3,0,0)
 import           GHC.Stack (HasCallStack)
 #endif
+import           Lens.Micro (lens)
 import           Network.Socket
 import           Network.Socket.Serialise (decodeSockAddr, encodeSockAddr)
 import           Prelude hiding (fail)
@@ -30,6 +37,18 @@ data Peer n = Peer
     { peerNodeId :: n
     , peerAddr   :: SockAddr
     } deriving (Eq, Show)
+
+instance H.HasPeerNodeId (Peer n) where
+    type NodeId (Peer n) = n
+
+    peerNodeId = lens peerNodeId (\s a -> s { peerNodeId = a })
+    {-# INLINE peerNodeId #-}
+
+instance H.HasPeerAddr (Peer n) where
+    type Addr (Peer n) = SockAddr
+
+    peerAddr = lens peerAddr (\s a -> s { peerAddr = a })
+    {-# INLINE peerAddr #-}
 
 instance Serialise n => Serialise (Peer n) where
     encode (Peer nid addr) =
@@ -71,15 +90,16 @@ instance Hashable n => Hashable (Peer n) where
         hashPortNum = hashUsing fromEnum
 
 knownPeer :: n -> HostName -> PortNumber -> IO (Peer n)
-knownPeer nid host port = Peer nid <$> resolve
-  where
-    resolve = do
-        let hints = defaultHints
-                      { addrFlags      = [AI_ALL, AI_NUMERICSERV]
-                      , addrSocketType = Stream
-                      }
-        addr:_ <- getAddrInfo (Just hints) (Just host) (Just (show port))
-        pure $ addrAddress addr
+knownPeer nid host port = Peer nid <$> resolve host port
+
+resolve :: HostName -> PortNumber -> IO SockAddr
+resolve host port = do
+    let hints = defaultHints
+                  { addrFlags      = [AI_ALL, AI_NUMERICSERV]
+                  , addrSocketType = Stream
+                  }
+    addr:_ <- getAddrInfo (Just hints) (Just host) (Just (show port))
+    pure $ addrAddress addr
 
 --------------------------------------------------------------------------------
 

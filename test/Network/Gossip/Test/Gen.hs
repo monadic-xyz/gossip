@@ -1,5 +1,5 @@
 module Network.Gossip.Test.Gen
-    ( NodeId
+    ( MockNodeId
     , Contacts
     , SplitMixSeed
     , LinkState (..)
@@ -45,8 +45,8 @@ import qualified Test.QuickCheck.Hedgehog as Gen
 
 -- Types -----------------------------------------------------------------------
 
-type NodeId       = Word16
-type Contacts     = [(NodeId, [NodeId])]
+type MockNodeId   = Word16
+type Contacts     = [(MockNodeId, [MockNodeId])]
 type SplitMixSeed = (Word64, Word64)
 type Milliseconds = Int
 
@@ -93,13 +93,13 @@ connectedContacts bounds = do
         Alga.adjacencyList . toRelation $ ensureConnected graph
   where
     -- Split network into randomly-sized chunks.
-    clusters :: ([NodeId], [Int]) -> [[NodeId]]
+    clusters :: ([MockNodeId], [Int]) -> [[MockNodeId]]
     clusters = unfoldr $ \case
         ([], _)    -> Nothing
         (ns, [])   -> Just (ns, mempty)
         (ns, s:ss) -> let (h, t) = splitAt s ns in Just (h, (t, ss))
 
-    genTopo :: MonadGen m => m ([NodeId] -> SymmetricRelation NodeId)
+    genTopo :: MonadGen m => m ([MockNodeId] -> SymmetricRelation MockNodeId)
     genTopo = Gen.element
         [ Alga.path
         , Alga.circuit
@@ -107,14 +107,14 @@ connectedContacts bounds = do
         , maybe Alga.empty (uncurry Alga.star) . uncons
         ]
 
-    subgraph :: MonadGen m => [NodeId] -> m (SymmetricRelation NodeId)
+    subgraph :: MonadGen m => [MockNodeId] -> m (SymmetricRelation MockNodeId)
     subgraph [node] = pure $ Alga.vertex node
     subgraph nodes  = ($ nodes) <$> genTopo
 
     -- Ensure the graph is connected: if it has only one component, it is
     -- already connected, otherwise, connect the roots of the forest as a
     -- (undirected) circuit and overlay the result onto the graph.
-    ensureConnected :: SymmetricRelation NodeId -> SymmetricRelation NodeId
+    ensureConnected :: SymmetricRelation MockNodeId -> SymmetricRelation MockNodeId
     ensureConnected g =
         let rel = toRelation g
          in case Alga.dfsForest rel of
@@ -131,10 +131,10 @@ circularContacts :: MonadGen m => NetworkBounds -> m Contacts
 circularContacts bounds =
     toContacts . zipped . Set.toList <$> nodeIds bounds
   where
-    zipped :: [NodeId] -> [(NodeId, NodeId)]
+    zipped :: [MockNodeId] -> [(MockNodeId, MockNodeId)]
     zipped ns = zip ns $ drop 1 (cycle ns)
 
-    toContacts :: [(NodeId, NodeId)] -> Contacts
+    toContacts :: [(MockNodeId, MockNodeId)] -> Contacts
     toContacts = map (second pure)
 
 ---- LinkState -----------------------------------------------------------------
@@ -166,10 +166,10 @@ infiniteListOf =
 
 -- Internal --------------------------------------------------------------------
 
-nodeIds :: MonadGen m => NetworkBounds -> m (Set NodeId)
+nodeIds :: MonadGen m => NetworkBounds -> m (Set MockNodeId)
 nodeIds NetworkBounds{..} =
     Gen.set (Range.constantFrom netMinNodes netMinNodes netMaxContacts)
             (nodeId netMaxNodes)
 
-nodeId :: MonadGen m => Int -> m NodeId
+nodeId :: MonadGen m => Int -> m MockNodeId
 nodeId maxNodes = Gen.word16 (Range.constant 0 (fromIntegral $ maxNodes - 1))

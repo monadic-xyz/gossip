@@ -9,7 +9,7 @@ import           Network.Gossip.Test.Gen
                  ( Contacts
                  , InfiniteListOf(..)
                  , LinkState(..)
-                 , NodeId
+                 , MockNodeId
                  , renderInf
                  )
 import qualified Network.Gossip.Test.Gen as Gen
@@ -145,28 +145,28 @@ storeLookup (nodeStore -> ref) mid = Map.lookup mid <$> readIORef ref
 -- Types -----------------------------------------------------------------------
 
 data Network = Network
-    { netNodes     :: Map NodeId Node
+    { netNodes     :: Map MockNodeId Node
     , netTaskQueue :: TaskQueue
     , netPRNG      :: IORef SMGen
     , netLinkState :: IORef (InfiniteListOf LinkState)
     }
 
 data Node = Node
-    { nodeId    :: NodeId
-    , nodeEnv   :: Env NodeId
+    { nodeId    :: MockNodeId
+    , nodeEnv   :: Env MockNodeId
     , nodeStore :: Store
     }
 
 type ChainOfEvents = NonEmpty MessageId
 
 data BroadcastMessage = BroadcastMessage
-    { bcastRoot    :: NodeId
+    { bcastRoot    :: MockNodeId
     , bcastMsgId   :: MessageId
     , bcastPayload :: ByteString
     } deriving Show
 
 toBroadcastMessages
-    :: NonEmpty NodeId
+    :: NonEmpty MockNodeId
     -> ChainOfEvents
     -> NonEmpty BroadcastMessage
 toBroadcastMessages roots chain =
@@ -189,7 +189,7 @@ genChainOfEvents =
      in
         chain
 
-genRoots :: MonadGen m => ChainOfEvents -> Contacts -> m (NonEmpty NodeId)
+genRoots :: MonadGen m => ChainOfEvents -> Contacts -> m (NonEmpty MockNodeId)
 genRoots chain contacts =
     let
         nodes = map fst contacts
@@ -229,7 +229,7 @@ initNetwork rng contacts links = do
 
     pure network
 
-runBroadcast :: Network -> Node -> Plumtree NodeId a -> IO a
+runBroadcast :: Network -> Node -> Plumtree MockNodeId a -> IO a
 runBroadcast network node ma = runPlumtree (nodeEnv node) ma >>= eval
   where
     eval = \case
@@ -264,7 +264,7 @@ runBroadcast network node ma = runPlumtree (nodeEnv node) ma >>= eval
 
         Done a -> pure a
 
-onNode :: Network -> NodeId -> Plumtree NodeId () -> IO ()
+onNode :: Network -> MockNodeId -> Plumtree MockNodeId () -> IO ()
 onNode network receiverId ma =
     case Map.lookup receiverId (netNodes network) of
         Nothing       -> throwString "onNode: Receiver not found!"

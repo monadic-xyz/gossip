@@ -30,16 +30,19 @@ data Traceable n
     | TraceWire       (WireEvent       n)
 
 data BootstrapEvent n where
-    Bootstrapping :: Traversable t => Peer n -> t (Peer n) -> BootstrapEvent n
+    Bootstrapping :: Traversable t
+                  => Peer n
+                  -> t (Maybe n, SockAddr)
+                  -> BootstrapEvent n
     Bootstrapped  :: Peer n -> BootstrapEvent n
 
 data ConnectionEvent n
-    = Connecting         (Peer n)
-    -- ^ Connecting to 'Peer'
+    = Connecting         SockAddr (Maybe n)
+    -- ^ Connecting to peer at 'SockAddr', optionally identified by 'n'
     | Connected          (Peer n)
     -- ^ Outgoing connection to 'Peer' established
-    | ConnectFailed      (Peer n) SomeException
-    -- ^ Outgoing connection attempt to 'Peer' failed with 'SomeException'
+    | ConnectFailed      SockAddr (Maybe n) SomeException
+    -- ^ Outgoing connection attempt to peer failed with 'SomeException'
     | ConnectionLost     (Peer n) SomeException
     -- ^ Connection reset by 'Peer'
     | ConnectionAccepted SockAddr

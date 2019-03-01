@@ -11,13 +11,17 @@
 --
 module Network.Gossip.IO.Socket
     ( Connection (..)
+
     , HandshakeRole (..)
     , Handshake
+
     , Env
+    , new
+
     , NetworkC (..)
     , Network
     , runNetwork
-    , new
+
     , listen
     , send
     , connect
@@ -25,7 +29,7 @@ module Network.Gossip.IO.Socket
     )
 where
 
-import           Network.Gossip.IO.Peer
+import           Network.Gossip.IO.Peer (Peer(..))
 import           Network.Gossip.IO.Wire
 
 import           Control.Concurrent (forkFinally)
@@ -33,20 +37,22 @@ import           Control.Concurrent.STM (STM, atomically)
 import           Control.Exception.Safe
 import           Control.Monad.Reader
 import           Control.Monad.Trans.Cont
+import           Data.Coerce (coerce)
 import           Data.Conduit (ConduitT, runConduit, (.|))
 import qualified Data.Conduit.Combinators as Conduit
 import           Data.Foldable (for_)
 import           Data.Hashable (Hashable)
-import           Data.Maybe (isJust)
 import           Data.Text (Text)
+import           Data.Traversable (for)
 import           Data.Void
 import qualified Focus
 #if !MIN_VERSION_network(3,0,0)
 import           GHC.Stack (HasCallStack)
 #endif
 import           Network.Socket (SockAddr, Socket, SocketType(Stream))
-import qualified Network.Socket as Sock
+import qualified Network.Socket as Network
 import qualified STMContainers.Map as STMMap
+
 
 data Error
     = GoawayReceived (Maybe Text)
@@ -117,7 +123,7 @@ instance Applicative (Network n p) where
     (<*>)  = ap
 
 instance Monad (Network n p) where
-    return            = pure
+    return          = pure
     Network m >>= f = Network $ m >>= fromNetwork . f
     {-# INLINE (>>=) #-}
 
@@ -144,30 +150,26 @@ listen
     -> Network n p Void
 listen eval addr = do
     hdl  <- ask
-    liftIO $ bracket open Sock.close (accept hdl)
+    liftIO $ bracket open Network.close (accept hdl)
   where
     open = do
-        sock <- Sock.socket (addrFamily addr) Stream Sock.defaultProtocol
-        Sock.setSocketOption sock Sock.ReuseAddr 1
-        Sock.bind sock addr
+        sock <- Network.socket (family addr) Stream Network.defaultProtocol
+        Network.setSocketOption sock Network.ReuseAddr 1
+        Network.bind sock (coerce addr)
 #if MIN_VERSION_network(3,0,0)
-        Sock.setCloseOnExecIfNeeded =<< Sock.fdSocket sock
+        Network.setCloseOnExecIfNeeded =<< Network.fdSocket sock
 #elif MIN_VERSION_network(2,7,0)
-        Sock.setCloseOnExecIfNeeded $ Sock.fdSocket sock
+        Network.setCloseOnExecIfNeeded $ Network.fdSocket sock
 #endif
-        Sock.listen sock 10
+        Network.listen sock 10
         pure $! sock
 
     accept hdl@Env { envHandshake } sock = forever $ do
-        (sock', addr') <- Sock.accept sock
-        forkUltimately_ (Sock.close sock') $ do
+        (sock', addr') <- Network.accept sock
+        forkUltimately_ (Network.close sock') $ do
             runNetwork hdl (connectionAccepted addr') >>= eval
             conn <- envHandshake Acceptor sock' addr' Nothing
             recvAll hdl eval conn
-
-    addrFamily Sock.SockAddrInet{}  = Sock.AF_INET
-    addrFamily Sock.SockAddrInet6{} = Sock.AF_INET6
-    addrFamily Sock.SockAddrUnix{}  = Sock.AF_UNIX
 
 send :: (Eq n, Hashable n) => Bool -> Peer n -> WireMessage p -> Network n p ()
 send allowAdHoc Peer { peerNodeId, peerAddr } msg = do
@@ -178,7 +180,7 @@ send allowAdHoc Peer { peerNodeId, peerAddr } msg = do
         Nothing | allowAdHoc -> do
             hands <- asks envHandshake
             liftIO . withSocket peerAddr $ \sock -> do
-                Sock.connect sock peerAddr
+                Network.connect sock (coerce peerAddr)
                 c <- hands Connector sock peerAddr (Just peerNodeId)
                 connSend c msg `finally` connClose c
 
@@ -187,17 +189,21 @@ send allowAdHoc Peer { peerNodeId, peerAddr } msg = do
 connect
     :: (Eq n, Hashable n)
     => (NetworkC n p () -> IO ())
-    -> Peer n
-    -> Network n p ()
-connect eval Peer { peerNodeId, peerAddr } = do
+    -> SockAddr
+    -> Maybe n
+    -> Network n p (Peer n)
+connect eval addr mnid = do
     hdl@Env { envConns, envHandshake } <- ask
     liftIO $ do
-        known <- atomically $ connsHas envConns peerNodeId
-        unless known $ do
-            sock <- Sock.socket (family peerAddr) Stream Sock.defaultProtocol
-            Sock.connect sock peerAddr
-            conn <- envHandshake Connector sock peerAddr (Just peerNodeId)
-            forkUltimately_ (connClose conn) $ recvAll hdl eval conn
+        known <- fmap join . for mnid $ atomically . connsGet envConns
+        case known of
+            Just conn -> pure $ connPeer conn
+            Nothing   -> do
+                sock <- Network.socket (family addr) Stream Network.defaultProtocol
+                Network.connect sock (coerce addr)
+                conn <- envHandshake Connector sock addr mnid
+                forkUltimately_ (connClose conn) $ recvAll hdl eval conn
+                pure $ connPeer conn
 
 disconnect :: (Eq n, Hashable n) => Peer n -> Network n p ()
 disconnect Peer { peerNodeId } = do
@@ -267,13 +273,6 @@ connsGet
     -> STM (Maybe (Connection n p))
 connsGet conns n = STMMap.lookup n conns
 
-connsHas
-    :: (Eq n, Hashable n)
-    => OpenConnections n p
-    -> n
-    -> STM Bool
-connsHas conns n = STMMap.focus (pure . (,Focus.Keep) . isJust) n conns
-
 --------------------------------------------------------------------------------
 
 forkUltimately_ :: IO () -> IO a -> IO ()
@@ -281,18 +280,19 @@ forkUltimately_ fin work = void $ forkFinally work (const fin)
 
 --------------------------------------------------------------------------------
 
-family :: SockAddr -> Sock.Family
-family Sock.SockAddrInet{}  = Sock.AF_INET
-family Sock.SockAddrInet6{} = Sock.AF_INET6
-family Sock.SockAddrUnix{}  = Sock.AF_UNIX
+family :: SockAddr -> Network.Family
+family Network.SockAddrInet{}  = Network.AF_INET
+family Network.SockAddrInet6{} = Network.AF_INET6
+family Network.SockAddrUnix{}  = Network.AF_UNIX
 #if !MIN_VERSION_network(3,0,0)
---family Sock.SockAddrCan{}   = Sock.AF_CAN
-family _                    = canNotSupported
+--family (SockAddr Network.SockAddrCan{} ) = Sock.AF_CAN
+family _                       = canNotSupported
 #endif
 
 withSocket :: SockAddr -> (Socket -> IO a) -> IO a
 withSocket addr =
-    bracket (Sock.socket (family addr) Stream Sock.defaultProtocol) Sock.close
+    bracket (Network.socket (family addr) Stream Network.defaultProtocol)
+            Network.close
 
 #if !MIN_VERSION_network(3,0,0)
 canNotSupported :: HasCallStack => a

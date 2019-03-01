@@ -38,7 +38,7 @@ defaultConfig = Config
 
 newtype Periodic = Periodic (Async ())
 
-new :: (Eq n, Hashable n)
+new :: (Eq n, Hashable n, H.HasPeer n)
     => Config
     -> (H.HyParView n () -> IO ())
     -> IO Periodic
@@ -53,11 +53,11 @@ destroy :: Periodic -> IO ()
 destroy (Periodic t) = uninterruptibleCancel t
 
 withPeriodic
-    :: (Eq n, Hashable n)
+    :: (Eq n, Hashable n, H.HasPeer n)
     => Config
     -> (H.HyParView n () -> IO ())
-    -> (Periodic -> IO a)
-    -> IO a
+    -> (Periodic -> IO b)
+    -> IO b
 withPeriodic cfg run = bracket (new cfg run) destroy
 
 --------------------------------------------------------------------------------

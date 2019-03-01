@@ -15,7 +15,7 @@ where
 
 import qualified Network.Gossip.HyParView as H
 import qualified Network.Gossip.HyParView.Periodic as HP
-import           Network.Gossip.IO.Peer
+import           Network.Gossip.IO.Peer (Peer(..))
 import           Network.Gossip.IO.Protocol (ProtocolMessage(..))
 import qualified Network.Gossip.IO.Socket as S
 import           Network.Gossip.IO.Trace
@@ -34,14 +34,16 @@ import           Data.Bifunctor (second)
 import           Data.ByteString (ByteString)
 import           Data.Foldable (toList)
 import           Data.Hashable (Hashable)
+import qualified Network.Socket as Network
 import           Prelude hiding (round)
 import qualified System.Random.SplitMix as SplitMix
+
 
 data Env n = Env
     { envPlumtree      :: P.Env  (Peer n)
     , envHyParView     :: H.Env  (Peer n)
     , envScheduler     :: PS.Env (Peer n)
-    , envIO            :: S.Env n (ProtocolMessage (Peer n))
+    , envIO            :: S.Env  n       (ProtocolMessage (Peer n))
     , envApplyMessage  :: P.MessageId -> ByteString -> IO P.ApplyResult
     , envLookupMessage :: P.MessageId -> IO (Maybe ByteString)
     , envTrace         :: Traceable n -> IO ()
@@ -65,7 +67,7 @@ withGossip
     -- ^ Lookup message
     -> (Traceable n -> IO ())
     -- ^ Tracing
-    -> t (Peer n)
+    -> t (Maybe n, Network.SockAddr)
     -- ^ Intial contacts
     -> (Env n -> IO a)
     -> IO a
@@ -155,17 +157,16 @@ evalHyParView
 evalHyParView env@Env { envTrace = trace } = go
   where
     go = \case
-        H.ConnectionOpen to k -> do
-            trace $ TraceConnection (Connecting to)
+        H.ConnectionOpen addr nid k -> do
+            trace $ TraceConnection (Connecting addr nid)
 
-            conn <-
-                    second (const $ mkConn to)
-                <$> tryAny (runNetwork env (S.connect (evalNetwork env) to))
+            peer <-
+                tryAny (runNetwork env (S.connect (evalNetwork env) addr nid))
 
             trace . TraceConnection $
-                either (ConnectFailed to) (const $ Connected to) conn
+                either (ConnectFailed addr nid) Connected peer
 
-            k conn >>= go
+            k (second mkConn peer) >>= go
 
         H.SendAdHoc rpc k -> do
             -- FIXME(kim): swallow exceptions?
@@ -185,7 +186,8 @@ evalHyParView env@Env { envTrace = trace } = go
         H.Done a -> pure a
 
     mkConn to = H.Connection
-        { connSend  = \rpc ->
+        { connPeer  = to
+        , connSend  = \rpc ->
             protoSend env False (H.rpcRecipient rpc) (ProtocolHyParView rpc)
         , connClose = do
             runNetwork env $ S.disconnect to
