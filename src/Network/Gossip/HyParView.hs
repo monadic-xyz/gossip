@@ -1,6 +1,7 @@
-{-# LANGUAGE ConstraintKinds #-}
-{-# LANGUAGE RankNTypes      #-}
-{-# LANGUAGE TypeFamilies    #-}
+{-# LANGUAGE ConstraintKinds  #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE RankNTypes       #-}
+{-# LANGUAGE TypeFamilies     #-}
 
 -- |
 -- Copyright   : 2018 Monadic GmbH
@@ -70,6 +71,7 @@ import           Control.Exception.Safe
 import           Control.Monad (when)
 import           Control.Monad.Reader
 import           Control.Monad.Trans.Cont
+import           Data.Bifunctor (first)
 import           Data.Bool (bool)
 import           Data.Foldable (foldlM, for_, traverse_)
 import           Data.Hashable (Hashable)
@@ -413,30 +415,53 @@ eject n = do
 -- list of 'RPC's may also contain 'Disconnect' messages due to evicted active
 -- peers.
 joinAny
-    :: (Eq n, Hashable n, HasPeer n)
+    :: ( Eq         n
+       , Eq (NodeId n)
+       , Eq (Addr   n)
+       , Hashable   n
+       , HasPeer    n
+       )
     => [(Maybe (NodeId n), Addr n)]
     -> HyParView n ()
-joinAny ns = do
+joinAny contacts = do
+    self <- asks envSelf
     Config { cfgMaxActive, cfgMaxPassive } <- asks envConfig
-    traverse_ go $ take (fromIntegral $ cfgMaxActive + cfgMaxPassive) ns
+    traverse_ go
+        . take (fromIntegral $ cfgMaxActive + cfgMaxPassive)
+        . filter (\(n, addr) ->
+            Just (view peerNodeId self) /= n && view peerAddr self /= addr)
+        $ contacts
   where
     go (n, addr) = do
         conn <- connectionOpen addr n
-        for_ conn $ \c -> do
-            addConnectedToActive c
-            sendTo c (connPeer c) Join
+        for_ conn $
+                addConnectedToActive
+            >=> traverse_ (\c -> sendTo c (connPeer c) Join)
 
 -- | Like 'joinAny', but stop on the first successfully established connection.
 joinFirst
-    :: (Eq n, Hashable n, HasPeer n)
+    :: ( Eq         n
+       , Eq (NodeId n)
+       , Eq (Addr   n)
+       , Hashable   n
+       , HasPeer    n
+       )
     => [(Maybe (NodeId n), Addr n)]
     -> HyParView n ()
-joinFirst []          = pure ()
-joinFirst ((n, a):ns) = do
-    conn <- connectionOpen a n
-    case conn of
-        Right c -> addConnectedToActive c *> sendTo c (connPeer c) Join
-        Left  _ -> joinFirst ns
+joinFirst contacts = do
+    self <- asks envSelf
+    go $ filter (\(n, addr) ->
+             Just (view peerNodeId self) /= n && view peerAddr self /= addr)
+         contacts
+  where
+    go []               = pure ()
+    go ((n, addr)  :xs) = do
+        conn <- connectionOpen addr n
+        case conn of
+            Right c ->
+                    addConnectedToActive c
+                >>= traverse_ (\c' -> sendTo c' (connPeer c') Join)
+            Left _  -> joinFirst xs
 
 -- | Initiate a 'Shuffle'.
 --
@@ -586,23 +611,30 @@ addToActive n = ask >>= go
       | envSelf == n = pure . Left $ toException SelfConnection
       | otherwise    = do
         conn <- connectionOpen (view peerAddr n) (Just (view peerNodeId n))
-        for_ conn addConnectedToActive
-        pure conn
+        case conn of
+            Right c -> first toException <$> addConnectedToActive c
+            e       -> pure e
 
-addConnectedToActive :: (Eq n, Hashable n) => Connection n -> HyParView n ()
+addConnectedToActive
+    :: (Eq n, Hashable n)
+    => Connection n
+    -> HyParView n (Either SelfConnection (Connection n))
 addConnectedToActive c = do
-    env@Env { envPRNG, envActive, envPassive } <- ask
-    removed <- liftIO $ do
-        gen <- atomicModifyIORef' envPRNG split
-        atomically $ do
-            (removed,_) <- evictActive env gen
-            modifyTVar' envActive  $ Map.insert (connPeer c) c
-            modifyTVar' envPassive $ Set.delete (connPeer c)
-            pure removed
-    neighborUp $ connPeer c
-    for_ removed $ \(rn, rconn) -> do
-        liftIO $ connClose rconn
-        neighborDown rn
+    env@Env { envSelf, envPRNG, envActive, envPassive } <- ask
+    if | connPeer c == envSelf -> Left SelfConnection <$ liftIO (connClose c)
+       | otherwise             -> do
+        removed <- liftIO $ do
+            gen <- atomicModifyIORef' envPRNG split
+            atomically $ do
+                (removed,_) <- evictActive env gen
+                modifyTVar' envActive  $ Map.insert (connPeer c) c
+                modifyTVar' envPassive $ Set.delete (connPeer c)
+                pure removed
+        neighborUp $ connPeer c
+        for_ removed $ \(rn, rconn) -> do
+            liftIO $ connClose rconn
+            neighborDown rn
+        pure $ Right c
 
 -- | Add a peer to the passive view, removing a random other node from the
 -- passive view if it is full.
