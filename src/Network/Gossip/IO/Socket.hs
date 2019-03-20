@@ -51,7 +51,7 @@ import           GHC.Stack (HasCallStack)
 #endif
 import           Network.Socket (SockAddr, Socket, SocketType(Stream))
 import qualified Network.Socket as Network
-import qualified STMContainers.Map as STMMap
+import qualified StmContainers.Map as STMMap
 
 
 data Error
@@ -260,11 +260,14 @@ connsDel_
 connsDel_ conns conn = STMMap.delete (peerNodeId (connPeer conn)) conns
 
 connsDel
-    :: (Eq n, Hashable n)
+    :: forall n p. (Eq n, Hashable n)
     => OpenConnections n p
     -> n
     -> STM (Maybe (Connection n p))
-connsDel conns n = STMMap.focus (pure . (,Focus.Remove)) n conns
+connsDel conns n = STMMap.focus expunge n conns
+  where
+    expunge :: Focus.Focus (Connection n p) STM (Maybe (Connection n p))
+    expunge = Focus.lookup <* Focus.delete
 
 connsGet
     :: (Eq n, Hashable n)
