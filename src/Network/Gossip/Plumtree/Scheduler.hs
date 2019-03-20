@@ -28,7 +28,7 @@ import qualified Network.Gossip.Plumtree as P
 import           Control.Concurrent (threadDelay)
 import           Control.Concurrent.Async (Async, async)
 import qualified Control.Concurrent.Async as Async
-import           Control.Concurrent.STM (atomically)
+import           Control.Concurrent.STM (STM, atomically)
 import           Control.Exception.Safe
 import           Control.Monad (forever)
 import           Control.Monad.Reader
@@ -45,7 +45,7 @@ import           Data.Unique
 import           Data.Void (Void)
 import qualified Focus
 import qualified ListT
-import qualified STMContainers.Map as STMMap
+import qualified StmContainers.Map as STMMap
 
 data Env n = Env
     { envFlushInterval :: LazyFlushInterval
@@ -73,7 +73,7 @@ destroy Env { envDeferred } = do
             . ListT.fold
                 (\xs -> pure . (xs <>) . map Async.uninterruptibleCancel . Map.elems . snd)
                 []
-            $ STMMap.stream envDeferred
+            $ STMMap.listT envDeferred
     sequence_ deferreds
 
 withScheduler
@@ -127,13 +127,17 @@ later timeout mid action = do
     upsert uniq act = Focus.alterM $
         pure . Just . maybe (Map.singleton uniq act) (Map.insert uniq act)
 
-    expunge _    Nothing     = pure ((), Focus.Remove)
-    expunge uniq (Just acts) = do
-        let acts' = Map.delete uniq acts
-        if Map.null acts' then
-            pure ((), Focus.Remove)
-        else
-            pure ((), Focus.Replace acts')
+    expunge :: Unique -> Focus.Focus (Map Unique (Async ())) STM ()
+    expunge uniq = do
+        el <- Focus.lookup
+        case el of
+          Nothing -> Focus.delete
+          Just acts -> do
+              let acts' = Map.delete uniq acts
+              if Map.null acts' then
+                  Focus.delete
+              else
+                  Focus.insert acts'
 
 cancel :: MonadIO m => P.MessageId -> SchedulerT n m ()
 cancel mid = do
@@ -141,8 +145,11 @@ cancel mid = do
     liftIO $ do
         actions <-
             atomically $
-                STMMap.focus (pure . (,Focus.Remove)) mid defs
+                STMMap.focus expunge mid defs
         (traverse_ . traverse_) Async.cancel actions
+  where
+    expunge :: Focus.Focus (Map Unique (Async ())) STM (Maybe (Map Unique (Async ())))
+    expunge = Focus.lookup <* Focus.delete
 
 -- Internal --------------------------------------------------------------------
 
@@ -154,8 +161,8 @@ runFlusher hdl send = async . forever $ do
     sleep $ envFlushInterval hdl
     ihaves <-
         atomically $ do
-            ihaves <- ListT.toList $ STMMap.stream (envLazyQueue hdl)
-            ihaves `seq` STMMap.deleteAll (envLazyQueue hdl)
+            ihaves <- ListT.toList $ STMMap.listT (envLazyQueue hdl)
+            ihaves `seq` STMMap.reset (envLazyQueue hdl)
             pure ihaves
     for_ ihaves $ \(to, byround) ->
         flip HashMap.traverseWithKey byround $ send to
