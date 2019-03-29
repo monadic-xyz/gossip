@@ -1,3 +1,5 @@
+{-# LANGUAGE RankNTypes #-}
+
 -- |
 -- Copyright   : 2018 Monadic GmbH
 -- License     : BSD3
@@ -34,6 +36,7 @@ import           Data.Bifunctor (second)
 import           Data.ByteString (ByteString)
 import           Data.Foldable (toList)
 import           Data.Hashable (Hashable)
+import           GHC.Stack (HasCallStack)
 import qualified Network.Socket as Network
 import           Prelude hiding (round)
 import qualified System.Random.SplitMix as SplitMix
@@ -46,7 +49,7 @@ data Env n = Env
     , envIO            :: S.Env  n       (ProtocolMessage (Peer n))
     , envApplyMessage  :: P.MessageId -> ByteString -> IO P.ApplyResult
     , envLookupMessage :: P.MessageId -> IO (Maybe ByteString)
-    , envTrace         :: Traceable n -> IO ()
+    , envTrace         :: HasCallStack => Traceable n -> IO ()
     }
 
 withGossip
@@ -65,7 +68,7 @@ withGossip
     -- ^ Apply message
     -> (P.MessageId -> IO (Maybe ByteString))
     -- ^ Lookup message
-    -> (Traceable n -> IO ())
+    -> (HasCallStack => Traceable n -> IO ())
     -- ^ Tracing
     -> t (Maybe n, Network.SockAddr)
     -- ^ Intial contacts
