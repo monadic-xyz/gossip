@@ -1,7 +1,7 @@
 module Main (main) where
 
-import qualified Network.Gossip.Test.Broadcast as Broadcast
-import qualified Network.Gossip.Test.Membership as Membership
+import qualified Test.Network.Gossip.Broadcast as Broadcast
+import qualified Test.Network.Gossip.Membership as Membership
 
 import           Control.Monad (unless)
 import           System.Exit (exitFailure)

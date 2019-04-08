@@ -1,19 +1,19 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Network.Gossip.Test.Broadcast (tests) where
+module Test.Network.Gossip.Broadcast (tests) where
 
 import           Network.Gossip.Plumtree
 
-import           Network.Gossip.Test.Assert (allEqual)
-import           Network.Gossip.Test.Gen
+import           Test.Network.Gossip.Assert (allEqual)
+import           Test.Network.Gossip.Gen
                  ( Contacts
                  , InfiniteListOf(..)
                  , LinkState(..)
                  , MockNodeId
                  , renderInf
                  )
-import qualified Network.Gossip.Test.Gen as Gen
-import           Network.Gossip.Test.Helpers
+import qualified Test.Network.Gossip.Gen as Gen
+import           Test.Network.Gossip.Helpers
 
 import           Control.Concurrent (threadDelay)
 import           Control.Exception.Safe (throwString)

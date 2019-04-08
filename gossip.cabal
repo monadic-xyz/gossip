@@ -113,11 +113,11 @@ test-suite tests
       , random
 
     other-modules:
-        Network.Gossip.Test.Assert
-        Network.Gossip.Test.Broadcast
-        Network.Gossip.Test.Gen
-        Network.Gossip.Test.Helpers
-        Network.Gossip.Test.Membership
+        Test.Network.Gossip.Assert
+        Test.Network.Gossip.Broadcast
+        Test.Network.Gossip.Gen
+        Test.Network.Gossip.Helpers
+        Test.Network.Gossip.Membership
 
     ghc-options:
         -threaded

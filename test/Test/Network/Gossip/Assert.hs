@@ -1,4 +1,4 @@
-module Network.Gossip.Test.Assert (allEqual) where
+module Test.Network.Gossip.Assert (allEqual) where
 
 import           Data.List.NonEmpty (NonEmpty(..))
 

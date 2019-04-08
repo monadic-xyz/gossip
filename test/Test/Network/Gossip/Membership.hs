@@ -2,11 +2,11 @@
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE TypeFamilies               #-}
 
-module Network.Gossip.Test.Membership (tests) where
+module Test.Network.Gossip.Membership (tests) where
 
 import           Network.Gossip.HyParView
 
-import           Network.Gossip.Test.Gen
+import           Test.Network.Gossip.Gen
                  ( Contacts
                  , InfiniteListOf(..)
                  , LinkState(..)
@@ -14,8 +14,8 @@ import           Network.Gossip.Test.Gen
                  , SplitMixSeed
                  , renderInf
                  )
-import qualified Network.Gossip.Test.Gen as Gen
-import           Network.Gossip.Test.Helpers
+import qualified Test.Network.Gossip.Gen as Gen
+import           Test.Network.Gossip.Helpers
 
 import qualified Algebra.Graph.AdjacencyMap as Alga
 import           Control.Concurrent (threadDelay)

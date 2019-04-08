@@ -1,4 +1,4 @@
-module Network.Gossip.Test.Gen
+module Test.Network.Gossip.Gen
     ( MockNodeId
     , Contacts
     , SplitMixSeed

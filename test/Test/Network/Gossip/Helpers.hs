@@ -1,4 +1,4 @@
-module Network.Gossip.Test.Helpers
+module Test.Network.Gossip.Helpers
     ( TaskQueue
     , newTaskQueue
     , scheduleTask
