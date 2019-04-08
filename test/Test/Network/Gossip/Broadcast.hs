@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TemplateHaskell   #-}
 
 module Test.Network.Gossip.Broadcast (tests) where
 
@@ -37,13 +38,10 @@ import qualified Hedgehog.Gen as Gen
 import qualified Hedgehog.Range as Range
 
 tests :: IO Bool
-tests = checkParallel $ Group "Gossip.Broadcast"
-    [ ("prop_atomic_connected",      propAtomicConnected)
-    , ("prop_atomic_network_delays", propAtomicNetworkDelays)
-    ]
+tests = checkParallel $$discover
 
-propAtomicConnected :: Property
-propAtomicConnected = property $ do
+prop_atomicConnected :: Property
+prop_atomicConnected = property $ do
     seed   <- forAll $ Gen.prune Gen.splitMixSeed
     boot   <- forAll $ Gen.connectedContacts Gen.defaultNetworkBounds
     links  <-
@@ -52,8 +50,8 @@ propAtomicConnected = property $ do
     bcasts <- forAll $ genBroadcasts boot
     atomicBroadcast (seedSMGen' seed) boot links bcasts
 
-propAtomicNetworkDelays :: Property
-propAtomicNetworkDelays = property $ do
+prop_atomicNetworkDelays :: Property
+prop_atomicNetworkDelays = property $ do
     seed   <- forAll $ Gen.prune Gen.splitMixSeed
     boot   <- forAll $ Gen.connectedContacts Gen.defaultNetworkBounds
     links  <-

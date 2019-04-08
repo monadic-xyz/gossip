@@ -1,3 +1,9 @@
 - arguments: [ -XTypeApplications ]
 
 - ignore: { name: Eta reduce }
+# https://github.com/ndmitchell/hlint/issues/186
+- ignore:
+    name: Unused LANGUAGE pragma
+    within:
+    - Test.Network.Gossip.Broadcast
+    - Test.Network.Gossip.Membership

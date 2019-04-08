@@ -1,5 +1,6 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE TemplateHaskell            #-}
 {-# LANGUAGE TypeFamilies               #-}
 
 module Test.Network.Gossip.Membership (tests) where
@@ -61,15 +62,10 @@ data Network = Network
 newtype Node = Node { nodeEnv :: Env MockPeer }
 
 tests :: IO Bool
-tests = checkParallel $ Group "Gossip.Membership"
-    [ ("prop_disconnected",       propDisconnected)
-    , ("prop_circular_connected", propCircularConnected)
-    , ("prop_connected",          propConnected)
-    , ("prop_network_delays",     propNetworkDelays)
-    ]
+tests = checkParallel $$discover
 
-propDisconnected :: Property
-propDisconnected = property $ do
+prop_disconnected :: Property
+prop_disconnected = property $ do
     seed  <- forAll Gen.splitMixSeed
     boot  <- forAll $ Gen.disconnectedContacts Gen.defaultNetworkBounds
     links <-
@@ -77,8 +73,8 @@ propDisconnected = property $ do
             Gen.prune $ Gen.infiniteListOf (pure Fast)
     activeDisconnected seed boot links
 
-propCircularConnected :: Property
-propCircularConnected = property $ do
+prop_circularConnected :: Property
+prop_circularConnected = property $ do
     seed  <- forAll Gen.splitMixSeed
     boot  <- forAll $ Gen.circularContacts Gen.defaultNetworkBounds
     links <-
@@ -86,8 +82,8 @@ propCircularConnected = property $ do
             Gen.prune $ Gen.infiniteListOf (pure Fast)
     activeConnected seed boot links
 
-propConnected :: Property
-propConnected = property $ do
+prop_connected :: Property
+prop_connected = property $ do
     seed  <- forAll Gen.splitMixSeed
     boot  <- forAll $ Gen.connectedContacts Gen.defaultNetworkBounds
     links <-
@@ -95,8 +91,8 @@ propConnected = property $ do
             Gen.prune $ Gen.infiniteListOf (pure Fast)
     activeConnected seed boot links
 
-propNetworkDelays :: Property
-propNetworkDelays = property $ do
+prop_networkDelays :: Property
+prop_networkDelays = property $ do
     seed  <- forAll Gen.splitMixSeed
     boot  <- forAll $ Gen.connectedContacts Gen.defaultNetworkBounds
     links <-
@@ -116,7 +112,7 @@ activeConnected seed boot links = do
     annotateShow $ passiveNetwork peers
     assert $ isConnected (activeNetwork peers)
 
--- | Like 'propActiveConnected', but assert that the network converges to a
+-- | Like 'prop_activeConnected', but assert that the network converges to a
 -- disconnected state.
 --
 -- This exists to suppress output which 'Test.Tasty.ExpectedFailure.expectFail'
