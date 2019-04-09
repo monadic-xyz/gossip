@@ -65,9 +65,11 @@ cmdJoin run =
             , Ensure $ \_ after (Join nid) out ->
                 let
                     peer = MockPeer nid
+                    chk  = and . toListOf
+                               (field @"active" . to (Set.member peer))
                  in do
-                    assert $ Set.member peer (view (field @"modelPeers" . field @"active") after)
-                    assert $ Set.member peer (view (field @"active") out)
+                    assert $ chk (modelPeers after)
+                    assert $ chk out
             ]
 
 -- Disconnect ------------------------------------------------------------------
@@ -93,19 +95,22 @@ cmdDisconnect run =
      in
         Command gen exe
             [ Update $ \s (Disconnect nid) _ ->
-                over (field @"modelPeers")
-                     ( over (field @"active")  (Set.delete (MockPeer nid))
-                     . over (field @"passive") (Set.insert (MockPeer nid))
-                     )
-                     s
+                let
+                    peer = MockPeer nid
+                 in
+                    over (field @"modelPeers")
+                        ( over (field @"active")  (Set.delete peer)
+                        . over (field @"passive") (Set.insert peer)
+                        )
+                        s
 
             , Ensure $ \_ after (Disconnect nid) out ->
                 let
                     peer = MockPeer nid
                     chk  = and . toListOf
-                             ( field @"active"  . to (not . Set.member peer)
-                            <> field @"passive" . to (Set.member peer)
-                             )
+                               ( field @"active"  . to (not . Set.member peer)
+                              <> field @"passive" . to (Set.member peer)
+                               )
                  in do
                     assert $ chk (modelPeers after)
                     assert $ chk out
