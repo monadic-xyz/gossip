@@ -104,6 +104,7 @@ test-suite tests
 
     build-depends:
         algebraic-graphs == 0.2.*
+      , generic-lens
       , gossip
       , hashable
       , hedgehog

@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds                  #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE KindSignatures             #-}
 {-# LANGUAGE TemplateHaskell            #-}
@@ -7,7 +8,10 @@ module Test.Network.Gossip.Membership.StateMachine (tests) where
 import qualified Network.Gossip.HyParView as Impl
 
 import           Control.Monad.IO.Class
+import           Data.Generics.Product
 import qualified Data.HashSet as Set
+import           GHC.Generics (Generic)
+import           Lens.Micro (over, to, toListOf)
 import           Lens.Micro.Extras (view)
 import           System.Random.SplitMix (seedSMGen')
 
@@ -26,7 +30,7 @@ data Model (v :: * -> *) = Model
     -- it's not so clear yet what we gain by maintaining the state separately.
     -- should this be 'HashSet (Var MockPeer v)'?
     , modelPeers :: Impl.Peers MockPeer
-    }
+    } deriving Generic
 
 initialState :: MockPeer -> Model v
 initialState self = Model self mempty
@@ -54,17 +58,16 @@ cmdJoin run =
      in
         Command gen exe
             [ Update $ \s (Join nid) _ ->
-                let
-                    peers  = modelPeers s
-                    peers' = peers
-                        { Impl.active =
-                            Set.insert (MockPeer nid) (Impl.active peers) }
-                 in
-                    s { modelPeers = peers' }
+                over (field @"modelPeers" . field @"active")
+                     (Set.insert (MockPeer nid))
+                     s
 
-            , Ensure $ \_ after (Join nid) out -> do
-                assert $ Set.member (MockPeer nid) (Impl.active (modelPeers after))
-                assert $ Set.member (MockPeer nid) (Impl.active out)
+            , Ensure $ \_ after (Join nid) out ->
+                let
+                    peer = MockPeer nid
+                 in do
+                    assert $ Set.member peer (view (field @"modelPeers" . field @"active") after)
+                    assert $ Set.member peer (view (field @"active") out)
             ]
 
 -- Disconnect ------------------------------------------------------------------
@@ -90,25 +93,22 @@ cmdDisconnect run =
      in
         Command gen exe
             [ Update $ \s (Disconnect nid) _ ->
-                let
-                    peers  = modelPeers s
-                    peers' = peers
-                        { Impl.active  = Set.delete (MockPeer nid) (Impl.active  peers)
-                        , Impl.passive = Set.insert (MockPeer nid) (Impl.passive peers)
-                        }
-                 in
-                    s { modelPeers = peers' }
+                over (field @"modelPeers")
+                     ( over (field @"active")  (Set.delete (MockPeer nid))
+                     . over (field @"passive") (Set.insert (MockPeer nid))
+                     )
+                     s
 
-            , Ensure $ \_ after (Disconnect nid) out -> do
+            , Ensure $ \_ after (Disconnect nid) out ->
                 let
-                    active  = Impl.active  (modelPeers after)
-                    passive = Impl.passive (modelPeers after)
+                    peer = MockPeer nid
+                    chk  = and . toListOf
+                             ( field @"active"  . to (not . Set.member peer)
+                            <> field @"passive" . to (Set.member peer)
+                             )
                  in do
-                    assert $ not $ Set.member (MockPeer nid) active
-                    assert $ Set.member (MockPeer nid) passive
-
-                assert $ not $ Set.member (MockPeer nid) (Impl.active out)
-                assert $ Set.member (MockPeer nid) (Impl.passive out)
+                    assert $ chk (modelPeers after)
+                    assert $ chk out
             ]
 
 --------------------------------------------------------------------------------
@@ -153,8 +153,8 @@ runSingleNode env ma = Impl.runHyParView env ma >>= eval
         Impl.NeighborDown _ k -> k >>= eval
         Impl.Done a           -> pure a
 
-    mkConn to = Impl.Connection
-        { Impl.connPeer  = to
+    mkConn to' = Impl.Connection
+        { Impl.connPeer  = to'
         , Impl.connSend  = const $ pure ()
         , Impl.connClose = pure ()
         }

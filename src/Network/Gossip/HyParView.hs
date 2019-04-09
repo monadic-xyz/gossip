@@ -109,7 +109,7 @@ data Connection n = Connection
 data Peers n = Peers
     { active  :: HashSet n
     , passive :: HashSet n
-    } deriving (Eq, Show)
+    } deriving (Eq, Show, Generic)
 
 instance (Eq n, Hashable n) => Semigroup (Peers n) where
     a <> b = Peers
