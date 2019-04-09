@@ -12,6 +12,7 @@ import           Test.Network.Gossip.Gen
                  , InfiniteListOf(..)
                  , LinkState(..)
                  , MockNodeId
+                 , MockPeer(..)
                  , SplitMixSeed
                  , renderInf
                  )
@@ -22,35 +23,19 @@ import qualified Algebra.Graph.AdjacencyMap as Alga
 import           Control.Concurrent (threadDelay)
 import           Control.Monad.Trans.Class (lift)
 import           Data.Bifunctor (second)
-import           Data.Coerce (coerce)
 import           Data.Foldable (for_)
-import           Data.Hashable (Hashable)
 import qualified Data.HashSet as Set
 import           Data.IORef (IORef, atomicModifyIORef', newIORef)
 import           Data.List (uncons)
 import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import           Data.Traversable (for)
-import           Lens.Micro (lens)
 import           Lens.Micro.Extras (view)
 import           System.Random (randomR, split)
 import           System.Random.SplitMix (SMGen, seedSMGen')
 
 import           Hedgehog hiding (eval)
 import qualified Hedgehog.Gen as Gen
-
-newtype MockPeer = MockPeer MockNodeId
-    deriving (Eq, Hashable)
-
-instance HasPeerNodeId MockPeer where
-    type NodeId MockPeer = MockNodeId
-    peerNodeId = lens coerce (const coerce)
-    {-# INLINE peerNodeId #-}
-
-instance HasPeerAddr MockPeer where
-    type Addr MockPeer = MockNodeId
-    peerAddr = lens coerce (const coerce)
-    {-# INLINE peerAddr #-}
 
 data Network = Network
     { netNodes     :: Map MockNodeId Node
@@ -112,7 +97,7 @@ activeConnected seed boot links = do
     annotateShow $ passiveNetwork peers
     assert $ isConnected (activeNetwork peers)
 
--- | Like 'prop_activeConnected', but assert that the network converges to a
+-- | Like 'activeConnected', but assert that the network converges to a
 -- disconnected state.
 --
 -- This exists to suppress output which 'Test.Tasty.ExpectedFailure.expectFail'

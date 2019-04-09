@@ -118,6 +118,7 @@ test-suite tests
         Test.Network.Gossip.Gen
         Test.Network.Gossip.Helpers
         Test.Network.Gossip.Membership
+        Test.Network.Gossip.Membership.StateMachine
 
     ghc-options:
         -threaded

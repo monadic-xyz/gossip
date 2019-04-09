@@ -7,3 +7,4 @@
     within:
     - Test.Network.Gossip.Broadcast
     - Test.Network.Gossip.Membership
+    - Test.Network.Gossip.Membership.StateMachine

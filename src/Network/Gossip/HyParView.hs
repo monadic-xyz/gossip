@@ -109,7 +109,17 @@ data Connection n = Connection
 data Peers n = Peers
     { active  :: HashSet n
     , passive :: HashSet n
-    }
+    } deriving (Eq, Show)
+
+instance (Eq n, Hashable n) => Semigroup (Peers n) where
+    a <> b = Peers
+        { active  = active  a <> active  b
+        , passive = passive a <> passive b
+        }
+
+instance (Eq n, Hashable n) => Monoid (Peers n) where
+    mempty  = Peers mempty mempty
+    mappend = (<>)
 
 -- TODO: stm containers
 data Env n = Env
