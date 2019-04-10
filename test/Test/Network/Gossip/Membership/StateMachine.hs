@@ -9,9 +9,10 @@ import qualified Network.Gossip.HyParView as Impl
 
 import           Control.Monad.IO.Class
 import           Data.Generics.Product
+import           Data.HashSet (HashSet)
 import qualified Data.HashSet as Set
 import           GHC.Generics (Generic)
-import           Lens.Micro (over, to, toListOf)
+import           Lens.Micro (Lens', set)
 import           Lens.Micro.Extras (view)
 import           System.Random.SplitMix (seedSMGen')
 
@@ -26,14 +27,16 @@ tests :: IO Bool
 tests = checkParallel $$discover
 
 data Model (v :: * -> *) = Model
-    { modelSelf  :: MockPeer
-    -- it's not so clear yet what we gain by maintaining the state separately.
-    -- should this be 'HashSet (Var MockPeer v)'?
-    , modelPeers :: Impl.Peers MockPeer
+    { self  :: MockPeer
+    , peers :: Maybe (Var (Impl.Peers MockPeer) v)
     } deriving Generic
 
+active, passive :: Lens' (Impl.Peers MockPeer) (HashSet MockPeer)
+active  = field @"active"
+passive = field @"passive"
+
 initialState :: MockPeer -> Model v
-initialState self = Model self mempty
+initialState self = Model self Nothing
 
 -- Join ------------------------------------------------------------------------
 
@@ -49,27 +52,27 @@ cmdJoin
     -> Command n m Model
 cmdJoin run =
     let
-        gen Model { modelSelf } =
+        gen Model { self } =
             Just . fmap Join
-                 . Gen.filter (/= view Impl.peerNodeId modelSelf)
+                 . Gen.filter (/= view Impl.peerNodeId self)
                  $ Gen.nodeId maxBound
 
         exe (Join nid) = run nid
      in
         Command gen exe
-            [ Update $ \s (Join nid) _ ->
-                over (field @"modelPeers" . field @"active")
-                     (Set.insert (MockPeer nid))
-                     s
+            [ Update $ \s _ out ->
+                set (field @"peers") (Just out) s
 
             , Ensure $ \_ after (Join nid) out ->
                 let
-                    peer = MockPeer nid
-                    chk  = and . toListOf
-                               (field @"active" . to (Set.member peer))
-                 in do
-                    assert $ chk (modelPeers after)
-                    assert $ chk out
+                    peer   = MockPeer nid
+                    peers' = concrete <$> peers after
+                 in
+                    case peers' of
+                        Nothing -> failure
+                        Just ps -> do
+                            ps === out
+                            assert $ Set.member peer $ view active ps
             ]
 
 -- Disconnect ------------------------------------------------------------------
@@ -86,34 +89,28 @@ cmdDisconnect
     -> Command n m Model
 cmdDisconnect run =
     let
-        gen Model { modelSelf } =
+        gen Model { self } =
             Just . fmap Disconnect
-                 . Gen.filter (/= view Impl.peerNodeId modelSelf)
+                 . Gen.filter (/= view Impl.peerNodeId self)
                  $ Gen.nodeId maxBound
 
         exe (Disconnect nid) = run nid
      in
         Command gen exe
-            [ Update $ \s (Disconnect nid) _ ->
-                let
-                    peer = MockPeer nid
-                 in
-                    over (field @"modelPeers")
-                        ( over (field @"active")  (Set.delete peer)
-                        . over (field @"passive") (Set.insert peer)
-                        )
-                        s
+            [ Update $ \s _ out ->
+                set (field @"peers") (Just out) s
 
             , Ensure $ \_ after (Disconnect nid) out ->
                 let
                     peer = MockPeer nid
-                    chk  = and . toListOf
-                               ( field @"active"  . to (not . Set.member peer)
-                              <> field @"passive" . to (Set.member peer)
-                               )
-                 in do
-                    assert $ chk (modelPeers after)
-                    assert $ chk out
+                    peers' = concrete <$> peers after
+                 in
+                    case peers' of
+                        Nothing -> failure
+                        Just ps -> do
+                            ps === out
+                            assert $       Set.member peer $ view passive ps
+                            assert $ not $ Set.member peer $ view active  ps
             ]
 
 --------------------------------------------------------------------------------
