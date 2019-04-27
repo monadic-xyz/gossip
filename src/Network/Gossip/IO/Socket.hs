@@ -156,7 +156,9 @@ listen eval addr = do
         sock <- Network.socket (family addr) Stream Network.defaultProtocol
         Network.setSocketOption sock Network.ReuseAddr 1
         Network.bind sock (coerce addr)
-#if MIN_VERSION_network(3,0,0)
+#if MIN_VERSION_network(3,1,0)
+        Network.withFdSocket sock Network.setCloseOnExecIfNeeded
+#elif MIN_VERSION_network(3,0,0)
         Network.setCloseOnExecIfNeeded =<< Network.fdSocket sock
 #elif MIN_VERSION_network(2,7,0)
         Network.setCloseOnExecIfNeeded $ Network.fdSocket sock
