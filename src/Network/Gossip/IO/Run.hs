@@ -12,6 +12,8 @@ module Network.Gossip.IO.Run
     , Env
     , withGossip
     , broadcast
+    , getPeers
+    , getPeers'
     )
 where
 
@@ -36,6 +38,7 @@ import           Data.Bifunctor (second)
 import           Data.ByteString (ByteString)
 import           Data.Foldable (toList)
 import           Data.Hashable (Hashable)
+import           Data.HashSet (HashSet)
 import           GHC.Stack (HasCallStack)
 import qualified Network.Socket as Network
 import           Prelude hiding (round)
@@ -118,6 +121,12 @@ withGossip self
 
 broadcast :: (Eq n, Hashable n) => Env n -> P.MessageId -> ByteString -> IO ()
 broadcast env mid msg = runPlumtree env $ P.broadcast mid msg
+
+getPeers :: (Eq n, Hashable n) => Env n -> IO (HashSet (Peer n))
+getPeers env = runHyParView env H.getPeers
+
+getPeers' :: (Eq n, Hashable n) => Env n -> IO (H.Peers (Peer n))
+getPeers' env = runHyParView env H.getPeers'
 
 evalPlumtree
     :: (Eq n, Hashable n)
