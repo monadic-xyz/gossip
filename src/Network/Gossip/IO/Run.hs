@@ -14,6 +14,8 @@ module Network.Gossip.IO.Run
     , broadcast
     , getPeers
     , getPeers'
+    , joinAny
+    , joinFirst
     )
 where
 
@@ -127,6 +129,12 @@ getPeers env = runHyParView env H.getPeers
 
 getPeers' :: (Eq n, Hashable n) => Env n -> IO (H.Peers (Peer n))
 getPeers' env = runHyParView env H.getPeers'
+
+joinAny :: (Eq n, Hashable n) => Env n -> [(Maybe n, Network.SockAddr)] -> IO ()
+joinAny env = runHyParView env . H.joinAny
+
+joinFirst :: (Eq n, Hashable n) => Env n -> [(Maybe n, Network.SockAddr)] -> IO ()
+joinFirst env = runHyParView env . H.joinFirst
 
 evalPlumtree
     :: (Eq n, Hashable n)
