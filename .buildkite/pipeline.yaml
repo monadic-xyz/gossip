@@ -1,0 +1,16 @@
+env:
+  BUILD_TMPDIR: /cache/tmp
+  BUILD_HOME: /cache/cabal
+
+steps:
+- label: "GHC 8.6"
+  commands:
+  - 'mkdir -p /cache/tmp'
+  - '.buildkite/build'
+  - 'rm -rf /cache/tmp'
+  agents:
+    production: "true"
+    platform: "linux"
+  env:
+    DOCKER_IMAGE: gcr.io/opensourcecoin/gossip-build@sha256:270117a3bf49e9e16893438edb09156f772e9f6a9632d6c4230c45413671344f
+    DOCKER_FILE: .buildkite/docker/ghc8.6/Dockerfile

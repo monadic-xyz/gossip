@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -eou pipefail
+
+set -x
+export PATH="$HOME/.cabal/bin:$PATH"
+
+cabal v2-update
+cabal v2-install -j --overwrite-policy=always stylish-haskell hlint
+
+scripts/check-fmt.sh
+hlint .
+cabal v2-configure --enable-tests
+
+# wtflol: passing --ghc-options to v2-configure will enable those for all
+# local and external packages.
+echo -e "package gossip\n  ghc-options: -Werror" >> cabal.project.local
+cat cabal.project.local
+
+cabal v2-build -j all
+cabal v2-test -j all
