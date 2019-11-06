@@ -1,4 +1,4 @@
-[![Build Status](https://travis-ci.org/oscoin/gossip.svg?branch=master)](https://travis-ci.org/oscoin/gossip)
+[![Build status](https://badge.buildkite.com/630dbb62636c376bfab2fe2532f5eecb9c150a99d4d6516d2c.svg)](https://buildkite.com/monadic/gossip)
 
 # Gossip
 
