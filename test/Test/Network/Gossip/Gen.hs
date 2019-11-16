@@ -1,5 +1,9 @@
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE TypeFamilies               #-}
+
 module Test.Network.Gossip.Gen
-    ( MockNodeId
+    ( MockPeer (..)
+    , MockNodeId
     , Contacts
     , SplitMixSeed
     , LinkState (..)
@@ -8,6 +12,9 @@ module Test.Network.Gossip.Gen
 
     , NetworkBounds
     , defaultNetworkBounds
+
+    , mockPeer
+    , nodeId
 
     , connectedContacts
     , disconnectedContacts
@@ -21,6 +28,8 @@ module Test.Network.Gossip.Gen
     )
 where
 
+import           Network.Gossip.HyParView (HasPeerAddr(..), HasPeerNodeId(..))
+
 import qualified Algebra.Graph.Class as Alga
 import           Algebra.Graph.Relation.Symmetric
                  ( SymmetricRelation
@@ -30,11 +39,15 @@ import           Algebra.Graph.Relation.Symmetric
 import qualified Algebra.Graph.ToGraph as Alga
 import           Control.Applicative (liftA2)
 import           Data.Bifunctor (second)
+import           Data.Coerce (coerce)
 import qualified Data.Graph as Graph
+import           Data.Hashable (Hashable)
 import           Data.List (uncons, unfoldr)
+import           Data.Maybe (fromMaybe)
 import           Data.Set (Set)
 import qualified Data.Set as Set
 import           Data.Word (Word16, Word64)
+import           Lens.Micro (lens)
 
 import           Hedgehog
 import qualified Hedgehog.Gen as Gen
@@ -44,6 +57,19 @@ import qualified Test.QuickCheck.Gen as QC
 import qualified Test.QuickCheck.Hedgehog as Gen
 
 -- Types -----------------------------------------------------------------------
+
+newtype MockPeer = MockPeer MockNodeId
+    deriving (Eq, Show, Hashable)
+
+instance HasPeerNodeId MockPeer where
+    type NodeId MockPeer = MockNodeId
+    peerNodeId = lens coerce (const coerce)
+    {-# INLINE peerNodeId #-}
+
+instance HasPeerAddr MockPeer where
+    type Addr MockPeer = MockNodeId
+    peerAddr = lens coerce (const coerce)
+    {-# INLINE peerAddr #-}
 
 type MockNodeId   = Word16
 type Contacts     = [(MockNodeId, [MockNodeId])]
@@ -78,6 +104,12 @@ defaultNetworkBounds = NetworkBounds
     }
 
 -- Generators ------------------------------------------------------------------
+
+mockPeer :: MonadGen m => Maybe Int -> m MockPeer
+mockPeer maxPeers = MockPeer <$> nodeId (fromMaybe maxBound maxPeers)
+
+nodeId :: MonadGen m => Int -> m MockNodeId
+nodeId maxNodes = Gen.word16 (Range.constant 0 (fromIntegral $ maxNodes - 1))
 
 ---- Contacts ------------------------------------------------------------------
 
@@ -170,6 +202,3 @@ nodeIds :: MonadGen m => NetworkBounds -> m (Set MockNodeId)
 nodeIds NetworkBounds{..} =
     Gen.set (Range.constantFrom netMinNodes netMinNodes netMaxContacts)
             (nodeId netMaxNodes)
-
-nodeId :: MonadGen m => Int -> m MockNodeId
-nodeId maxNodes = Gen.word16 (Range.constant 0 (fromIntegral $ maxNodes - 1))

@@ -1,5 +1,6 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE TemplateHaskell            #-}
 {-# LANGUAGE TypeFamilies               #-}
 
 module Test.Network.Gossip.Membership (tests) where
@@ -11,6 +12,7 @@ import           Test.Network.Gossip.Gen
                  , InfiniteListOf(..)
                  , LinkState(..)
                  , MockNodeId
+                 , MockPeer(..)
                  , SplitMixSeed
                  , renderInf
                  )
@@ -21,35 +23,19 @@ import qualified Algebra.Graph.AdjacencyMap as Alga
 import           Control.Concurrent (threadDelay)
 import           Control.Monad.Trans.Class (lift)
 import           Data.Bifunctor (second)
-import           Data.Coerce (coerce)
 import           Data.Foldable (for_)
-import           Data.Hashable (Hashable)
 import qualified Data.HashSet as Set
 import           Data.IORef (IORef, atomicModifyIORef', newIORef)
 import           Data.List (uncons)
 import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import           Data.Traversable (for)
-import           Lens.Micro (lens)
 import           Lens.Micro.Extras (view)
 import           System.Random (randomR, split)
 import           System.Random.SplitMix (SMGen, seedSMGen')
 
 import           Hedgehog hiding (eval)
 import qualified Hedgehog.Gen as Gen
-
-newtype MockPeer = MockPeer MockNodeId
-    deriving (Eq, Hashable)
-
-instance HasPeerNodeId MockPeer where
-    type NodeId MockPeer = MockNodeId
-    peerNodeId = lens coerce (const coerce)
-    {-# INLINE peerNodeId #-}
-
-instance HasPeerAddr MockPeer where
-    type Addr MockPeer = MockNodeId
-    peerAddr = lens coerce (const coerce)
-    {-# INLINE peerAddr #-}
 
 data Network = Network
     { netNodes     :: Map MockNodeId Node
@@ -61,15 +47,10 @@ data Network = Network
 newtype Node = Node { nodeEnv :: Env MockPeer }
 
 tests :: IO Bool
-tests = checkParallel $ Group "Gossip.Membership"
-    [ ("prop_disconnected",       propDisconnected)
-    , ("prop_circular_connected", propCircularConnected)
-    , ("prop_connected",          propConnected)
-    , ("prop_network_delays",     propNetworkDelays)
-    ]
+tests = checkParallel $$discover
 
-propDisconnected :: Property
-propDisconnected = property $ do
+prop_disconnected :: Property
+prop_disconnected = property $ do
     seed  <- forAll Gen.splitMixSeed
     boot  <- forAll $ Gen.disconnectedContacts Gen.defaultNetworkBounds
     links <-
@@ -77,8 +58,8 @@ propDisconnected = property $ do
             Gen.prune $ Gen.infiniteListOf (pure Fast)
     activeDisconnected seed boot links
 
-propCircularConnected :: Property
-propCircularConnected = property $ do
+prop_circularConnected :: Property
+prop_circularConnected = property $ do
     seed  <- forAll Gen.splitMixSeed
     boot  <- forAll $ Gen.circularContacts Gen.defaultNetworkBounds
     links <-
@@ -86,8 +67,8 @@ propCircularConnected = property $ do
             Gen.prune $ Gen.infiniteListOf (pure Fast)
     activeConnected seed boot links
 
-propConnected :: Property
-propConnected = property $ do
+prop_connected :: Property
+prop_connected = property $ do
     seed  <- forAll Gen.splitMixSeed
     boot  <- forAll $ Gen.connectedContacts Gen.defaultNetworkBounds
     links <-
@@ -95,8 +76,8 @@ propConnected = property $ do
             Gen.prune $ Gen.infiniteListOf (pure Fast)
     activeConnected seed boot links
 
-propNetworkDelays :: Property
-propNetworkDelays = property $ do
+prop_networkDelays :: Property
+prop_networkDelays = property $ do
     seed  <- forAll Gen.splitMixSeed
     boot  <- forAll $ Gen.connectedContacts Gen.defaultNetworkBounds
     links <-
@@ -116,7 +97,7 @@ activeConnected seed boot links = do
     annotateShow $ passiveNetwork peers
     assert $ isConnected (activeNetwork peers)
 
--- | Like 'propActiveConnected', but assert that the network converges to a
+-- | Like 'activeConnected', but assert that the network converges to a
 -- disconnected state.
 --
 -- This exists to suppress output which 'Test.Tasty.ExpectedFailure.expectFail'
