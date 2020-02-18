@@ -1,3 +1,4 @@
 - arguments: [ -XTypeApplications ]
 
 - ignore: { name: Eta reduce }
+- ignore: { name: Redundant multi-way if }
