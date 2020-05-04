@@ -279,7 +279,7 @@ passiveView = asks envPassive >>= liftIO . readTVarIO
 receive :: (Eq n, Hashable n, HasPeer n) => RPC n -> HyParView n ()
 receive RPC { rpcSender, rpcPayload } = case rpcPayload of
     Join -> do
-        arwl <- fromIntegral . cfgARWL <$> asks envConfig
+        arwl <- asks (fromIntegral . cfgARWL . envConfig)
         void $ addToActive rpcSender
         broadcast $ ForwardJoin rpcSender arwl
 
@@ -299,7 +299,7 @@ receive RPC { rpcSender, rpcPayload } = case rpcPayload of
                     prio <- neighborPriority
                     sendTo c joining $ Neighbor prio
         else do
-            prwl <- fromIntegral . cfgPRWL <$> asks envConfig
+            prwl <- asks (fromIntegral . cfgPRWL . envConfig)
             when (ttl == prwl) $
                 addToPassive joining
             sendAnyActive (ForwardJoin joining (decr ttl)) [joining]
