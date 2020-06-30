@@ -27,7 +27,7 @@ common common
 
     build-depends:
         async
-      , base
+      , base >= 4.7
       , bytestring
       , containers
       , safe-exceptions
@@ -88,6 +88,7 @@ library
       , microlens
       , mtl
       , network
+      , primitive < 0.7.1.0
       , random
       , serialise
       , stm-containers >= 1 && < 1.2
